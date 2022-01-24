@@ -1,16 +1,15 @@
 import os
+import shutil
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional
-
-if TYPE_CHECKING:
-    from utils.torch_utils import ModelEMA
+from typing import Any, Dict, Optional, List
 
 import torch
 from torch import nn
 
+from utils.torch_utils import ModelEMA, load_model_weights
 from utils.general import check_img_size, labels_to_class_weights
-from logger import logger
+from logger import logger, colorstr
 from utils.torch_utils import is_parallel
 
 LOCAL_RANK = int(
@@ -56,7 +55,7 @@ class AbstractModelManager(ABC):
         pass
 
 
-class YOLOModelManager(AbstractModelManager):  # noqa
+class YOLOModelManager(AbstractModelManager):
     """YOLO Model Manager."""
 
     def __init__(
@@ -73,6 +72,60 @@ class YOLOModelManager(AbstractModelManager):  # noqa
         :param weight_dir: weight directory path
         """
         super().__init__(model, cfg, device, weight_dir)
+
+    def _load_weight(self, path: str) -> nn.Module:
+        """Load weights from the model.
+        Also, reads parameters to decide whether the model
+        training has been completed or needs to be resumed
+        :return: weights loaded model
+        """
+        if path.endswith(".pt"):
+            ckpt = torch.load(path, map_location=self.device)
+            exclude: List[str] = []
+            self.model = load_model_weights(self.model, weights=ckpt, exclude=exclude)
+            start_epoch = ckpt["epoch"] + 1
+            if self.cfg["train"]["resume"]:
+                assert start_epoch > 0, (
+                        "%s training to %g epochs is finished, nothing to resume."
+                        % (self.cfg["train"]["weights"], self.cfg["train"]["epochs"],)
+                )
+                if RANK in [-1, 0]:
+                    logger.info(
+                        "Copying "
+                        + colorstr("bold", f"{Path(path).parent.parent}")
+                        + " to "
+                        + colorstr("bold", f"{self.weight_dir.parent} ...")
+                    )
+                    shutil.copytree(
+                        Path(path).parent.parent,
+                        self.weight_dir.parent,
+                        dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("*.yaml"),
+                    )  # save previous files
+                    shutil.copytree(
+                        Path(path).parent.parent,
+                        self.weight_dir.parent / f"backup_epoch{start_epoch - 1}",
+                        dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("*.pt"),
+                    )  # save previous weights
+                    shutil.copytree(
+                        Path(path).parent,
+                        self.weight_dir.parent / f"weight_epoch{start_epoch - 1}",
+                        dirs_exist_ok=True,
+                    )  # save previous weights
+                self.start_epoch = start_epoch
+            if self.cfg["train"]["epochs"] < start_epoch:
+                logger.info(
+                    "%s has been trained for %g epochs. Fine-tuning for %g additional epochs."
+                    % (
+                        self.cfg["train"]["weights"],
+                        ckpt["epoch"],
+                        self.cfg["train"]["epochs"],
+                    )
+                )
+                self.start_epoch = 0
+
+        return self.model
 
     def freeze(self, freeze_n_layer: int) -> nn.Module:
         """Freeze layers from the top.
