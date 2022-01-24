@@ -83,6 +83,12 @@ def get_parser() -> argparse.Namespace:
         help="Keep top-k after NMS. This must be less or equal to top-k (TensorRT only)",
     )
     parser.add_argument(
+        "--shuffle",
+        action="store_true",
+        dest="shuffle",
+        help="Whether to shuffle images in the data loader",
+    )
+    parser.add_argument(
         "--rect",
         action="store_true",
         dest="rect",
@@ -97,12 +103,6 @@ def get_parser() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Validate as single class only.",
-    )
-    parser.add_argument(
-        "--plot",
-        action="store_true",
-        default=False,
-        help="Save validation result plot.",
     )
     parser.add_argument("--verbose", type=int, default=1, help="Verbosity level")
     parser.add_argument(
@@ -151,7 +151,12 @@ def get_parser() -> argparse.Namespace:
     parser.add_argument(
         "--n-skip", type=int, default=0, help="n skip option for data loader."
     )
-
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        dest="plot",
+        help="Whether to plot batch results",
+    )
     return parser.parse_args()
 
 
@@ -230,6 +235,7 @@ if __name__ == "__main__":
         num_workers=min(os.cpu_count(), args.batch_size),  # type: ignore
         pin_memory=True,
         collate_fn=LoadCOTSImagesAndLabels.collate_fn,
+        shuffle=args.shuffle
     )
 
     # Set model parameters
@@ -263,6 +269,8 @@ if __name__ == "__main__":
         export=True,
         nms_type=args.nms_type,
         tta=args.tta,
+        show_plot=args.plot,
+        num_plots2save=10
     )
     t0 = time.monotonic()
     val_result = validator.validation()

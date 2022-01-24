@@ -1,14 +1,18 @@
+import os
+import random
 import time
 
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union, Optional
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from utils.plots import plot_images
 from loss.losses import ComputeLoss
 from training.abstract_validator import AbstractValidator
 from utils.general import scale_coords, xywh2xyxy
@@ -36,6 +40,8 @@ class YoloValidator(AbstractValidator):
             tta: bool = False,
             tta_scales: List = None,
             tta_flips: List = None,
+            show_plot: bool = False,
+            num_plots2save: int = 0
     ) -> None:
         """Initialize YoloValidator class
         :param model: a torch model or TensorRT Wrapper
@@ -69,6 +75,8 @@ class YoloValidator(AbstractValidator):
         :param tta: Apply TTA or not
         :param tta_scales: scale ratios of each augmentation for TTA
         :param tta_flips: flip types of each augmentation for TTA
+        :param show_plot: whether to show images with targets and detections
+        :param num_plots2save: number of plots to save
         """
         super().__init__(
             model,
@@ -99,6 +107,9 @@ class YoloValidator(AbstractValidator):
         self.loss = torch.zeros(3, device=self.device)
         self.seen: int = 0
         self.hybrid_label = hybrid_label
+        self.show_plots = show_plot
+        num_batches = len(dataloader.dataset) // dataloader.batch_size  # noqa
+        self._idxs2plot = random.sample(range(num_batches), min(num_plots2save, num_batches))
         self.tqdm = None  # type: Optional[tqdm]
 
     def init_statistics(self) -> None:
@@ -324,6 +335,25 @@ class YoloValidator(AbstractValidator):
             )
         self.statistics["dt"][2] += time.time() - t3
         self.statistics_per_image(imgs, out, targets, shapes, paths)
+
+        if len(self._idxs2plot) > 0 or self.show_plots:
+            formatted_out = \
+                [
+                    np.stack(
+                        [np.array(
+                            [float(i), c, (x1 + x2) / 2, (y1 + y2) / 2, (x2 - x1) / 2, (y2 - y1) / 2])
+                            for (x1, y1, x2, y2, _, c) in arr.cpu().numpy()])
+                    if len(arr) > 0 else np.array([])
+                    for i, arr in enumerate(out)
+                ]
+            f_name = None
+            if batch_idx in self._idxs2plot:
+                f_name = os.path.join(self.log_dir, f"img_batch{batch_idx}.jpg")
+            out_img = plot_images(images=imgs, targets=targets, predictions=formatted_out,
+                                  unnormalize=False, fname=f_name, resize_mosaic=False)
+            if self.show_plots:
+                plt.imshow(out_img)
+                plt.show()
 
     def compute_statistics(self) -> None:
         """Compute statistics for dataset."""
