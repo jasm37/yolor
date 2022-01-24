@@ -1,68 +1,94 @@
-# PyTorch utils
-
-import logging
 import math
 import os
+import random
 import time
 from contextlib import contextmanager
 from copy import deepcopy
+from typing import Generator, Optional, Union, List, Tuple, Dict
 
+import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
 import torch.nn as nn
-import torch.nn.functional as F
-import torchvision
+import torch.nn.functional as functional
 
-logger = logging.getLogger(__name__)
+from logger import logger
+
+
+def count_param(model: nn.Module) -> int:
+    """Count number of all parameters
+    :param model: PyTorch model
+    :return: Sum of # of parameters
+    """
+    return sum(list(x.numel() for x in model.parameters()))
 
 
 @contextmanager
-def torch_distributed_zero_first(local_rank: int):
-    """
-    Decorator to make all processes in distributed training wait for each local_master to do something.
+def torch_distributed_zero_first(local_rank: int) -> Generator:
+    """Make sure torch distributed call is run on only local_rank -1 or 0
+    Decorator to make all processes in distributed training wait for each local_master
+    to do something.
     """
     if local_rank not in [-1, 0]:
-        torch.distributed.barrier()
+        dist.barrier(device_ids=[local_rank])  # type: ignore
     yield
     if local_rank == 0:
-        torch.distributed.barrier()
+        dist.barrier(device_ids=[0])  # type: ignore
 
 
-def init_torch_seeds(seed=0):
-    # Speed-reproducibility tradeoff https://pytorch.org/docs/stable/notes/randomness.html
+def init_torch_seeds(seed: int = 0) -> None:
+    """Set random seed for torch
+    If seed == 0, it can be slower but more reproducible
+    If not, it would be faster but less reproducible
+    Speed-reproducibility tradeoff https://pytorch.org/docs/stable/notes/randomness.html
+    """
     torch.manual_seed(seed)
-    if seed == 0:  # slower, more reproducible
+
+    if seed == 0:
         cudnn.deterministic = True
         cudnn.benchmark = False
-    else:  # faster, less reproducible
+
+    else:
         cudnn.deterministic = False
         cudnn.benchmark = True
 
 
-def select_device(device='', batch_size=None):
-    # device = 'cpu' or '0' or '0,1,2,3'
-    cpu_request = device.lower() == 'cpu'
-    if device and not cpu_request:  # if device requested other than 'cpu'
-        os.environ['CUDA_VISIBLE_DEVICES'] = device  # set environment variable
-        assert torch.cuda.is_available(), 'CUDA unavailable, invalid device %s requested' % device  # check availablity
+def select_device(device: str = "", batch_size: Optional[int] = None) -> torch.device:
+    """Select torch device
+    :param device: 'cpu' or '0' or '0, 1, 2, 3' format string
+    :param batch_size: distribute batch to multiple gpus
+    :returns: a torch device
+    """
+    cpu_request = device.lower() == "cpu"
+    if device and not cpu_request:
+        os.environ["CUDA_VISIBLE_DEVICES"] = device
+        assert torch.cuda.is_available(), (
+                "CUDA unavailable, invalid device %s requested" % device
+        )
 
     cuda = False if cpu_request else torch.cuda.is_available()
     if cuda:
-        c = 1024 ** 2  # bytes to MB
+        c = 1024 ** 2
         ng = torch.cuda.device_count()
-        if ng > 1 and batch_size:  # check that batch_size is compatible with device_count
-            assert batch_size % ng == 0, 'batch-size %g not multiple of GPU count %g' % (batch_size, ng)
+        if ng > 1 and batch_size:
+            assert (
+                    batch_size % ng == 0
+            ), "batch-size %g not multiple of GPU count %g" % (batch_size, ng)
         x = [torch.cuda.get_device_properties(i) for i in range(ng)]
-        s = f'Using torch {torch.__version__} '
+        s = "Using CUDA "
         for i in range(0, ng):
             if i == 1:
-                s = ' ' * len(s)
-            logger.info("%sCUDA:%g (%s, %dMB)" % (s, i, x[i].name, x[i].total_memory / c))
-    else:
-        logger.info(f'Using torch {torch.__version__} CPU')
+                s = " " * len(s)
+                logger.info(
+                    "%sdevice%g _CudaDeviceProperties(name='%s', total_memory=%dMB)"
+                    % (s, i, x[i].name, x[i].total_memory / c)
+                )
 
-    logger.info('')  # skip a line
-    return torch.device('cuda:0' if cuda else 'cpu')
+    else:
+        logger.info("Using CPU")
+
+    logger.info("")
+    return torch.device("cuda:0" if cuda else "cpu")
 
 
 def time_synchronized():
@@ -70,13 +96,43 @@ def time_synchronized():
     return time.time()
 
 
-def is_parallel(model):
-    return type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
+def is_parallel(model: nn.Module) -> bool:
+    """Check if the model is DP or DDP
+    :param model: PyTorch nn.Module
+    :return: True if the model is DP or DDP, False otherwise
+    """
+    return type(model) in (
+        nn.parallel.DataParallel,
+        nn.parallel.DistributedDataParallel,
+    )
 
 
-def intersect_dicts(da, db, exclude=()):
-    # Dictionary intersection of matching keys and shapes, omitting 'exclude' keys, using da values
-    return {k: v for k, v in da.items() if k in db and not any(x in k for x in exclude) and v.shape == db[k].shape}
+def de_parallel(model: nn.Module) -> nn.Module:
+    """Decapsule parallelized model.
+    :param model: Single-GPU model, DP model or DDP model
+    :return: a decapsulized single-GPU model
+    """
+    return model.module if is_parallel(model) else model  # type: ignore
+
+
+def init_seeds(seed: int = 0) -> None:
+    """Initialize random seeds"""
+    random.seed(seed)
+    np.random.seed(seed)
+    init_torch_seeds(seed)
+
+
+def intersect_dicts(
+        da: dict, db: dict, exclude: Union[List[str], Tuple[str, ...]] = ()
+) -> dict:
+    """Check dictionary intersection of matching keys and shapes
+    Omitting 'exclude' keys, using da values.
+    """
+    return {
+        k: v
+        for k, v in da.items()
+        if k in db and not any(x in k for x in exclude) and v.shape == db[k].shape
+    }
 
 
 def initialize_weights(model):
@@ -96,24 +152,46 @@ def find_modules(model, mclass=nn.Conv2d):
     return [i for i, m in enumerate(model.module_list) if isinstance(m, mclass)]
 
 
-def sparsity(model):
-    # Return global model sparsity
-    a, b = 0., 0.
+def load_model_weights(
+        model: nn.Module, weights: Union[Dict, str], exclude: Optional[list] = None,
+) -> nn.Module:
+    """Load model's pretrained weights
+    :param model: model instance to load weight
+    :param weights: model weight path
+    :param exclude: exclude list of layer names
+    :return: self.model which the weights has been loaded
+    """
+    if isinstance(weights, str):
+        ckpt = torch.load(weights)
+    else:
+        ckpt = weights
+
+    exclude_list = [] if exclude is None else exclude
+
+    state_dict = ckpt["model"].float().state_dict()
+    state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude_list)
+    model.load_state_dict(state_dict, strict=False)  # load weights
+    logger.info(
+        "Transferred %g/%g items from %s"
+        % (
+            len(state_dict),
+            len(model.state_dict()),
+            weights if isinstance(weights, str) else weights.keys(),
+        )
+    )
+    return model
+
+
+def sparsity(model: nn.Module) -> float:
+    """Compute global model sparsity
+    :param model: PyTorch model
+    :return: sparsity ratio (sum of zeros / # of parameters)
+    """
+    n_param, zero_param = 0.0, 0.0
     for p in model.parameters():
-        a += p.numel()
-        b += (p == 0).sum()
-    return b / a
-
-
-def prune(model, amount=0.3):
-    # Prune model to requested global sparsity
-    import torch.nn.utils.prune as prune
-    print('Pruning model... ', end='')
-    for name, m in model.named_modules():
-        if isinstance(m, nn.Conv2d):
-            prune.l1_unstructured(m, name='weight', amount=amount)  # prune
-            prune.remove(m, 'weight')  # make permanent
-    print(' %.3g global sparsity' % sparsity(model))
+        n_param += p.numel()
+        zero_param += (p == 0).sum()  # type: ignore
+    return zero_param / n_param
 
 
 def fuse_conv_and_bn(conv, bn):
@@ -153,59 +231,62 @@ def model_info(model, verbose=False, img_size=640):
     try:  # FLOPS
         from thop import profile
         flops = profile(deepcopy(model), inputs=(torch.zeros(1, 3, img_size, img_size),), verbose=False)[0] / 1E9 * 2
-        img_size = img_size if isinstance(img_size, list) else [img_size, img_size]  # expand if int/float
-        fs = ', %.9f GFLOPS' % (flops)  # 640x640 FLOPS
+        fs = ', %.9f GFLOPS' % flops  # 640x640 FLOPS
     except (ImportError, Exception):
         fs = ''
 
     logger.info(f"Model Summary: {len(list(model.modules()))} layers, {n_p} parameters, {n_g} gradients{fs}")
 
 
-def load_classifier(name='resnet101', n=2):
-    # Loads a pretrained model reshaped to n-class output
-    model = torchvision.models.__dict__[name](pretrained=True)
-
-    # ResNet model properties
-    # input_size = [3, 224, 224]
-    # input_space = 'RGB'
-    # input_range = [0, 1]
-    # mean = [0.485, 0.456, 0.406]
-    # std = [0.229, 0.224, 0.225]
-
-    # Reshape output to n classes
-    filters = model.fc.weight.shape[1]
-    model.fc.bias = nn.Parameter(torch.zeros(n), requires_grad=True)
-    model.fc.weight = nn.Parameter(torch.zeros(n, filters), requires_grad=True)
-    model.fc.out_features = n
-    return model
-
-
-def scale_img(img, ratio=1.0, same_shape=False):  # img(16,3,256,416), r=ratio
-    # scales img(bs,3,y,x) by ratio
+def scale_img(
+        img: torch.Tensor, ratio: float = 1.0, same_shape: bool = False, gs: int = 32
+) -> torch.Tensor:
+    """Scales img(bs,3,y,x) by ratio constrained to gs-multiple.
+    Reference: https://github.com/ultralytics/yolov5/blob/master/utils/torch_utils.py#L257-L267
+    :param img: image tensor
+    :param ratio: scale ratio for image tensor
+    :param same_shape: whether to make same shape or not
+    :param gs: stride
+    :returns: scaled image tensor
+    """
     if ratio == 1.0:
         return img
     else:
         h, w = img.shape[2:]
         s = (int(h * ratio), int(w * ratio))  # new size
-        img = F.interpolate(img, size=s, mode='bilinear', align_corners=False)  # resize
+        img = functional.interpolate(img, size=s, mode="bilinear", align_corners=False)  # resize
         if not same_shape:  # pad/crop img
-            gs = 32  # (pixels) grid size
-            h, w = [math.ceil(x * ratio / gs) * gs for x in (h, w)]
-        return F.pad(img, [0, w - s[1], 0, h - s[0]], value=0.447)  # value = imagenet mean
+            h, w = (math.ceil(x * ratio / gs) * gs for x in (h, w))
+        return functional.pad(
+            img, [0, w - s[1], 0, h - s[0]], value=0.447
+        )  # value = imagenet mean
 
 
-def copy_attr(a, b, include=(), exclude=()):
-    # Copy attributes from b to a, options to only include [...] and to exclude [...]
+def copy_attr(
+        a: object,
+        b: object,
+        include: Union[List[str], Tuple[str, ...]] = (),
+        exclude: Union[List[str], Tuple[str, ...]] = (),
+) -> None:
+    """Copy attributes from b to a, options to only include and to exclude.
+    :param a: destination
+    :param b: source
+    :param include: key names to copy
+    :param exclude: key names NOT to copy
+    """
     for k, v in b.__dict__.items():
-        if (len(include) and k not in include) or k.startswith('_') or k in exclude:
+        if (len(include) and k not in include) or k.startswith("_") or k in exclude:
             continue
         else:
             setattr(a, k, v)
 
 
 class ModelEMA:
-    """ Model Exponential Moving Average from https://github.com/rwightman/pytorch-image-models
-    Keep a moving average of everything in the model state_dict (parameters and buffers).
+    """Model Exponential Moving Average.
+
+    from https://github.com/rwightman/pytorch-image-
+    models Keep a moving average of everything in the model state_dict (parameters and
+    buffers).
     This is intended to allow functionality like
     https://www.tensorflow.org/api_docs/python/tf/train/ExponentialMovingAverage
     A smoothed version of the weights is necessary for some training schemes to perform well.
@@ -213,28 +294,40 @@ class ModelEMA:
     GPU assignment and distributed training wrappers.
     """
 
-    def __init__(self, model, decay=0.9999, updates=0):
+    def __init__(
+            self, model: nn.Module, decay: float = 0.9999, updates: int = 0
+    ) -> None:
+        """Initialize ModelEMA class."""
         # Create EMA
-        self.ema = deepcopy(model.module if is_parallel(model) else model).eval()  # FP32 EMA
+        self.ema = deepcopy(model).eval()  # FP32 EMA
         # if next(model.parameters()).device.type != 'cpu':
         #     self.ema.half()  # FP16 EMA
         self.updates = updates  # number of EMA updates
-        self.decay = lambda x: decay * (1 - math.exp(-x / 2000))  # decay exponential ramp (to help early epochs)
+        self.decay = lambda x: decay * (
+                1 - math.exp(-x / 2000)
+        )  # decay exponential ramp (to help early epochs)
         for p in self.ema.parameters():
             p.requires_grad_(False)
 
-    def update(self, model):
-        # Update EMA parameters
+    def update(self, model: nn.Module) -> None:
+        """Update EMA parameters."""
         with torch.no_grad():
             self.updates += 1
             d = self.decay(self.updates)
 
-            msd = model.module.state_dict() if is_parallel(model) else model.state_dict()  # model state_dict
+            msd = model.state_dict()  # model state_dict
             for k, v in self.ema.state_dict().items():
                 if v.dtype.is_floating_point:
+                    key = k if k in msd else f"module.{k}"
                     v *= d
-                    v += (1. - d) * msd[k].detach()
+                    v += (1.0 - d) * msd[key].detach()
 
-    def update_attr(self, model, include=(), exclude=('process_group', 'reducer')):
+    def update_attr(
+            self,
+            model: nn.Module,
+            include: Union[List[str], Tuple[str, ...]] = (),
+            exclude: tuple = ("process_group", "reducer"),
+    ) -> None:
+        """Update EMA attributes."""
         # Update EMA attributes
         copy_attr(self.ema, model, include, exclude)

@@ -1,112 +1,140 @@
-# General utils
-
 import glob
-import logging
 import math
 import os
-import platform
-import random
 import re
-import subprocess
 import time
 from pathlib import Path
 
 import cv2
-import matplotlib
 import numpy as np
 import torch
-import yaml
 
-from utils.google_utils import gsutil_getsize
-from utils.metrics import fitness, fitness_p, fitness_r, fitness_ap50, fitness_ap, fitness_f   
-from utils.torch_utils import init_torch_seeds
+from logger import logger
 
-# Set printoptions
-torch.set_printoptions(linewidth=320, precision=5, profile='long')
-np.set_printoptions(linewidth=320, formatter={'float_kind': '{:11.5g}'.format})  # format short g, %precision=5
-matplotlib.rc('font', **{'size': 11})
+from typing import Dict, List, Optional, Tuple, Union
 
-# Prevent OpenCV from multithreading (to use PyTorch DataLoader)
-cv2.setNumThreads(0)
+# Settings START
+torch.set_printoptions(linewidth=320, precision=5, profile="long")
+np.set_printoptions(
+    linewidth=320, formatter={"float_kind": "{:11.5g}".format}
+)  # format short g, %precision=5
+cv2.setNumThreads(0)  # prevent OpenCV from multithreading (incompatible with PyTorch DataLoader)
+os.environ["NUMEXPR_MAX_THREADS"] = str(min(os.cpu_count(), 8))  # NumExpr max threads
+# Settings END
 
-
-def set_logging(rank=-1):
-    logging.basicConfig(
-        format="%(message)s",
-        level=logging.INFO if rank in [-1, 0] else logging.WARN)
+DIV_EPS = 1e-16
 
 
-def init_seeds(seed=0):
-    random.seed(seed)
-    np.random.seed(seed)
-    init_torch_seeds(seed)
+def resample_segments(segments: List[np.ndarray], n: int = 1000) -> List[np.ndarray]:
+    """Interpolate segments by (n, 2) segment points
+    :param segments: segmentation coordinates list [(m, 2), ...]
+    :param n: number of interpolation
+    :return: Interpolated segmentation (n, 2)
+    """
+    for i, s in enumerate(segments):
+        x = np.linspace(0, len(s) - 1, n)
+        xp = np.arange(len(s))
+        segments[i] = (
+            np.concatenate([np.interp(x, xp, s[:, i]) for i in range(2)]).reshape(2, -1).T
+        )  # segment xy
+
+    return segments
 
 
-def get_latest_run(search_dir='.'):
-    # Return path to most recent 'last.pt' in /runs (i.e. to --resume from)
-    last_list = glob.glob(f'{search_dir}/**/last*.pt', recursive=True)
-    return max(last_list, key=os.path.getctime) if last_list else ''
+def make_divisible(x: int, divisor: int, minimum_check_number: int = 0) -> int:
+    """Return 'x' evenly divisible by 'divisor'
+    :param x: Input which want to make divisible with 'divisor'
+    :param divisor: Divisor
+    :param minimum_check_number: Minimum number to check.
+    :returns: ceil(x / divisor) * divisor
+    """
+    if x <= minimum_check_number:
+        return math.floor(x)
+    else:
+        return math.ceil(x / divisor) * divisor
 
 
-def check_git_status():
-    # Suggest 'git pull' if repo is out of date
-    if platform.system() in ['Linux', 'Darwin'] and not os.path.isfile('/.dockerenv'):
-        s = subprocess.check_output('if [ -d .git ]; then git fetch && git status -uno; fi', shell=True).decode('utf-8')
-        if 'Your branch is behind' in s:
-            print(s[s.find('Your branch is behind'):s.find('\n\n')] + '\n')
-
-
-def check_img_size(img_size, s=32):
-    # Verify img_size is a multiple of stride s
-    new_size = make_divisible(img_size, int(s))  # ceil gs-multiple
+def check_img_size(img_size: int, s: int = 32) -> int:
+    """Verify image size is a multiple of stride s
+    :param img_size: Current image size
+    :param s: Stride
+    :returns: New image size verified with stride s
+    """
+    new_size = make_divisible(img_size, int(s))
     if new_size != img_size:
-        print('WARNING: --img-size %g must be multiple of max stride %g, updating to %g' % (img_size, s, new_size))
+        logger.warning(
+            "WARNING --img-size %g must be multiple of max stride %g, updating to %g"
+            % (img_size, s, new_size)
+        )
     return new_size
 
 
-def check_file(file):
-    # Search for file if not found
-    if os.path.isfile(file) or file == '':
-        return file
-    else:
-        files = glob.glob('./**/' + file, recursive=True)  # find file
-        assert len(files), 'File Not Found: %s' % file  # assert file was found
-        assert len(files) == 1, "Multiple files match '%s', specify exact path: %s" % (file, files)  # assert unique
-        return files[0]  # return file
+def segment2box(segment: np.ndarray, width: int = 640, height: int = 640) -> np.ndarray:
+    """Convert 1 segment label to 1 box label
+    Applying inside-image constraint, i.e. (xy1, xy2, ...) to (xyxy)
+    :param segment: one segmentation coordinates. (n, 2)
+    :param width: width constraint
+    :param height: height constraint
+    :return: bounding box constrained by (width, height)
+    """
+    x, y = segment.T  # segment xy
+    inside = (x >= 0) & (y >= 0) & (x <= width) & (y <= height)
+    x, y, = x[inside], y[inside]
+    return (
+        np.array([x.min(), y.min(), x.max(), y.max()]) if any(x) else np.zeros((1, 4))
+    )  # xyxy
 
 
-def check_dataset(dict):
-    # Download dataset if not found locally
-    val, s = dict.get('val'), dict.get('download')
-    if val and len(val):
-        val = [Path(x).resolve() for x in (val if isinstance(val, list) else [val])]  # val path
-        if not all(x.exists() for x in val):
-            print('\nWARNING: Dataset not found, nonexistent paths: %s' % [str(x) for x in val if not x.exists()])
-            if s and len(s):  # download script
-                print('Downloading %s ...' % s)
-                if s.startswith('http') and s.endswith('.zip'):  # URL
-                    f = Path(s).name  # filename
-                    torch.hub.download_url_to_file(s, f)
-                    r = os.system('unzip -q %s -d ../ && rm %s' % (f, f))  # unzip
-                else:  # bash script
-                    r = os.system(s)
-                print('Dataset autodownload %s\n' % ('success' if r == 0 else 'failure'))  # analyze return value
-            else:
-                raise Exception('Dataset not found.')
+def segments2boxes(segments: List[np.ndarray]) -> np.ndarray:
+    """Convert segment labels to box labels, i.e. (xy1, xy2, ...) to (xywh)
+    :param segments: List of segments. [(n1, 2), (n2, 2), ...]
+    :return: box labels (n, 4)
+    """
+    boxes = []
+    for s in segments:
+        x, y = s.T  # segment xy
+        boxes.append([x.min(), y.min(), x.max(), y.max()])  # cls, xyxy
+    return xyxy2xywh(np.array(boxes), clip_eps=None, check_validity=False)  # type: ignore
 
 
-def make_divisible(x, divisor):
-    # Returns x evenly divisible by divisor
-    return math.ceil(x / divisor) * divisor
+def box_candidates(
+        box1: np.ndarray,
+        box2: np.ndarray,
+        wh_thr: float = 2,
+        ar_thr: float = 20,
+        area_thr: float = 0.1,
+) -> np.ndarray:  # box1(4,n), box2(4,n)
+    """Compute candidate boxes
+    :param box1: before augment
+    :param box2: after augment
+    :param wh_thr: width and height threshold (pixels),
+    :param ar_thr: aspect ratio threshold
+    :param area_thr: area_ratio
+    :return: Boolean mask index of the box candidates.
+    """
+    w1, h1 = box1[2] - box1[0], box1[3] - box1[1]
+    w2, h2 = box2[2] - box2[0], box2[3] - box2[1]
+    ar = np.maximum(w2 / (h2 + DIV_EPS), h2 / (w2 + DIV_EPS))  # aspect ratio
+    return (
+            (w2 > wh_thr)
+            & (h2 > wh_thr)
+            & (w2 * h2 / (w1 * h1 + DIV_EPS) > area_thr)
+            & (ar < ar_thr)
+    )  # candidates
 
 
-def labels_to_class_weights(labels, nc=80):
-    # Get class weights (inverse frequency) from training labels
+def labels_to_class_weights(labels: Union[list, np.ndarray, torch.Tensor], nc: int = 80) \
+        -> torch.Tensor:
+    """Get class weights from training labels
+    :param labels: labels to use
+    :param nc: number of classes
+    :return class weight tensor
+    """
     if labels[0] is None:  # no labels loaded
         return torch.Tensor()
 
-    labels = np.concatenate(labels, 0)  # labels.shape = (866643, 5) for COCO
-    classes = labels[:, 0].astype(np.int)  # labels = [class xywh]
+    c_labels = np.concatenate(labels, 0)  # labels.shape = (866643, 5) for COCO
+    classes = c_labels[:, 0].astype(int)  # labels = [class xywh]
     weights = np.bincount(classes, minlength=nc)  # occurrences per class
 
     # Prepend gridpoint count (for uCE training)
@@ -119,52 +147,163 @@ def labels_to_class_weights(labels, nc=80):
     return torch.from_numpy(weights)
 
 
-def labels_to_image_weights(labels, nc=80, class_weights=np.ones(80)):
-    # Produces image weights based on class mAPs
+def labels_to_image_weights(
+        labels: Union[list, np.ndarray],
+        nc: int = 80,
+        class_weights: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Produce image weights based on class mAPs
+    :param labels: labels to use
+    :param nc: number of classes
+    :param class_weights: class weights
+    :return image weight tensor
+    """
+    if class_weights is None:
+        np_class_weights: np.ndarray = np.ones(80)
+    else:
+        np_class_weights = class_weights
+
     n = len(labels)
-    class_counts = np.array([np.bincount(labels[i][:, 0].astype(np.int), minlength=nc) for i in range(n)])
-    image_weights = (class_weights.reshape(1, nc) * class_counts).sum(1)
-    # index = random.choices(range(n), weights=image_weights, k=1)  # weight image sample
+    class_counts = np.array(
+        [np.bincount(labels[i][:, 0].astype(int), minlength=nc) for i in range(n)]
+    )
+    image_weights = (np_class_weights.reshape(1, nc) * class_counts).sum(1)
     return image_weights
 
 
-def coco80_to_coco91_class():  # converts 80-index (val2014) to 91-index (paper)
-    # https://tech.amikelive.com/node-718/what-object-categories-labels-are-in-coco-dataset/
-    # a = np.loadtxt('data/coco.names', dtype='str', delimiter='\n')
-    # b = np.loadtxt('data/coco_paper.names', dtype='str', delimiter='\n')
-    # x1 = [list(a[i] == b).index(True) + 1 for i in range(80)]  # darknet to coco
-    # x2 = [list(b[i] == a).index(True) if any(b[i] == a) else None for i in range(91)]  # coco to darknet
-    x = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 31, 32, 33, 34,
-         35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
-         64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90]
-    return x
+def clip_coords(
+        boxes: Union[torch.Tensor, np.ndarray],
+        wh: Tuple[float, float],
+        inplace: bool = True,
+) -> Union[torch.Tensor, np.ndarray]:
+    """Clip bounding boxes with xyxy format to given wh (width, height).
+    :param boxes: bounding boxes (n, 4) (x1, y1, x2, y2)
+    :param wh: image size (width, height)
+    :param inplace: inplace modification
+    :return clipped boxes
+    """
+    if isinstance(boxes, torch.Tensor):  # faster individually
+        if not inplace:
+            boxes = boxes.clone()
+
+        boxes[:, 0].clamp_(0, wh[0])  # x1
+        boxes[:, 1].clamp_(0, wh[1])  # y1
+        boxes[:, 2].clamp_(0, wh[0])  # x2
+        boxes[:, 3].clamp_(0, wh[1])  # y2
+    else:  # np.array (faster grouped)
+        if not inplace:
+            boxes = np.copy(boxes)
+
+        boxes[:, [0, 2]] = boxes[:, [0, 2]].clip(0, wh[0])  # x1, x2
+        boxes[:, [1, 3]] = boxes[:, [1, 3]].clip(0, wh[1])  # y1, y2
+
+    return boxes
 
 
-def xyxy2xywh(x):
-    # Convert nx4 boxes from [x1, y1, x2, y2] to [x, y, w, h] where xy1=top-left, xy2=bottom-right
+def xyn2xy(
+        x: Union[torch.Tensor, np.ndarray],
+        wh: Tuple[float, float] = (640, 640),
+        pad: Tuple[float, float] = (0.0, 0.0),
+) -> Union[torch.Tensor, np.ndarray]:
+    """Convert normalized xy (n, 2) to pixel coordinates xy
+    :param x: input segments
+    :param wh: Image size (width and height). If normalized xywh to pixel xyxy format, place image size here
+    :param pad: image padded size (width and height)
+    """
+    # Convert normalized segments into pixel segments, shape (n,2)
     y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
-    y[:, 0] = (x[:, 0] + x[:, 2]) / 2  # x center
-    y[:, 1] = (x[:, 1] + x[:, 3]) / 2  # y center
-    y[:, 2] = x[:, 2] - x[:, 0]  # width
-    y[:, 3] = x[:, 3] - x[:, 1]  # height
+    y[:, 0] = wh[0] * x[:, 0] + pad[0]  # top left x
+    y[:, 1] = wh[1] * x[:, 1] + pad[1]  # top left y
     return y
 
 
-def xywh2xyxy(x):
-    # Convert nx4 boxes from [x, y, w, h] to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
+def xyxy2xywh(
+        x: Union[torch.Tensor, np.ndarray],
+        wh: Tuple[float, float] = (1.0, 1.0),
+        clip_eps: Optional[float] = None,
+        check_validity: bool = True,
+) -> Union[torch.Tensor, np.ndarray]:
+    """Convert (n, 4) bound boxes from xyxy to xywh format
+    [x1, y1, x2, y2] to [x, y, w, h] where xy1=top-left, xy2=bottom-right
+    :param x: (n, 4) xyxy coordinates
+    :param wh: image size (width, height)
+               Give image size only if you want to
+               normalized pixel coordinates to normalized coordinates
+    :param clip_eps: clip coordinates by wh with epsilon margin. If clip_eps is not None
+                     epsilon value is recommended to be 1E-3
+    :param check_validity: bounding box width and height validity check
+                          which make bounding boxes to the following conditions
+                          1) (x1 - width / 2) >= 0
+                          2) (y1 - height / 2) >= 0
+                          3) (x2 + width / 2) <= 1
+                          4) (y2 + height / 2) <= 1
+    :return: (xywh / wh) with centered xy
+    """
     y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
-    y[:, 0] = x[:, 0] - x[:, 2] / 2  # top left x
-    y[:, 1] = x[:, 1] - x[:, 3] / 2  # top left y
-    y[:, 2] = x[:, 0] + x[:, 2] / 2  # bottom right x
-    y[:, 3] = x[:, 1] + x[:, 3] / 2  # bottom right y
+
+    if clip_eps is not None:
+        y = clip_coords(y, (wh[0] - clip_eps, wh[1] - clip_eps))
+
+    y[:, 0] = ((x[:, 0] + x[:, 2]) / 2) / wh[0]  # x center
+    y[:, 1] = ((x[:, 1] + x[:, 3]) / 2) / wh[1]  # y center
+    y[:, 2] = (x[:, 2] - x[:, 0]) / wh[0]  # width
+    y[:, 3] = (x[:, 3] - x[:, 1]) / wh[1]  # height
+
+    if check_validity:
+        y[:, 2] = y[:, 2] + (np.minimum((y[:, 0] - (y[:, 2] / 2)), 0) * 2)
+        y[:, 2] = y[:, 2] - ((np.maximum((y[:, 0] + (y[:, 2] / 2)), 1) - 1) * 2)
+        y[:, 3] = y[:, 3] + (np.minimum((y[:, 1] - (y[:, 3] / 2)), 0) * 2)
+        y[:, 3] = y[:, 3] - ((np.maximum((y[:, 1] + (y[:, 3] / 2)), 1) - 1) * 2)
+
+        y = y.clip(1e-12, 1)
+
     return y
 
 
-def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
+def xywh2xyxy(
+        x: Union[torch.Tensor, np.ndarray],
+        ratio: Tuple[float, float] = (1.0, 1.0),
+        wh: Tuple[float, float] = (1.0, 1.0),
+        pad: Tuple[float, float] = (0.0, 0.0),
+) -> Union[torch.Tensor, np.ndarray]:
+    """Convert (n, 4) bound boxes from xywh to xyxy format
+    [x, y, w, h] to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
+    :param x: (n, 4) xywh coordinates
+    :param ratio: label ratio adjustment. Default value won't change anything other than xywh to xyxy
+    :param wh: Image size (width and height). If normalized xywh to pixel xyxy format, place image size here
+    :param pad: image padded size (width and height)
+    :return:  (ratio * wh * xyxy + pad)
+    """
+    y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+    y[:, 0] = ratio[0] * wh[0] * (x[:, 0] - x[:, 2] / 2) + pad[0]  # top left x
+    y[:, 1] = ratio[1] * wh[1] * (x[:, 1] - x[:, 3] / 2) + pad[1]  # top left y
+    y[:, 2] = ratio[0] * wh[0] * (x[:, 0] + x[:, 2] / 2) + pad[0]  # bottom right x
+    y[:, 3] = ratio[1] * wh[1] * (x[:, 1] + x[:, 3] / 2) + pad[1]  # bottom right y
+    return y
+
+
+def scale_coords(
+        img1_shape: Tuple[float, float],
+        coords: Union[torch.Tensor, np.ndarray],
+        img0_shape: Tuple[float, float],
+        ratio_pad: Optional[Union[tuple, list, np.ndarray]] = None,
+) -> Union[torch.Tensor, np.ndarray]:
+    """Rescale coords (xyxy) from img1_shape to img0_shape
+    :param img1_shape: current image shape (h, w)
+    :param coords: (xyxy) coordinates
+    :param img0_shape: target image shape (h, w)
+    :param ratio_pad: padding ratio  (w, h)
+    :return scaled coordinates
+    """
     # Rescale coords (xyxy) from img1_shape to img0_shape
     if ratio_pad is None:  # calculate from img0_shape
-        gain = min(img1_shape[0] / img0_shape[0], img1_shape[1] / img0_shape[1])  # gain  = old / new
-        pad = (img1_shape[1] - img0_shape[1] * gain) / 2, (img1_shape[0] - img0_shape[0] * gain) / 2  # wh padding
+        gain = min(
+            img1_shape[0] / img0_shape[0], img1_shape[1] / img0_shape[1]
+        )  # gain  = old / new
+        pad = (
+            (img1_shape[1] - img0_shape[1] * gain) / 2,
+            (img1_shape[0] - img0_shape[0] * gain) / 2,
+        )  # wh padding
     else:
         gain = ratio_pad[0][0]
         pad = ratio_pad[1]
@@ -172,278 +311,155 @@ def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
     coords[:, [0, 2]] -= pad[0]  # x padding
     coords[:, [1, 3]] -= pad[1]  # y padding
     coords[:, :4] /= gain
-    clip_coords(coords, img0_shape)
+    clip_coords(coords, img0_shape[::-1])  # clip_coord use wh image shape.
     return coords
 
 
-def clip_coords(boxes, img_shape):
-    # Clip bounding xyxy bounding boxes to image shape (height, width)
-    boxes[:, 0].clamp_(0, img_shape[1])  # x1
-    boxes[:, 1].clamp_(0, img_shape[0])  # y1
-    boxes[:, 2].clamp_(0, img_shape[1])  # x2
-    boxes[:, 3].clamp_(0, img_shape[0])  # y2
-
-
-def bbox_iou(box1, box2, x1y1x2y2=True, GIoU=False, DIoU=False, CIoU=False, EIoU=False, ECIoU=False, eps=1e-9):
-    # Returns the IoU of box1 to box2. box1 is 4, box2 is nx4
-    box2 = box2.T
-
-    # Get the coordinates of bounding boxes
-    if x1y1x2y2:  # x1, y1, x2, y2 = box1
-        b1_x1, b1_y1, b1_x2, b1_y2 = box1[0], box1[1], box1[2], box1[3]
-        b2_x1, b2_y1, b2_x2, b2_y2 = box2[0], box2[1], box2[2], box2[3]
-    else:  # transform from xywh to xyxy
-        b1_x1, b1_x2 = box1[0] - box1[2] / 2, box1[0] + box1[2] / 2
-        b1_y1, b1_y2 = box1[1] - box1[3] / 2, box1[1] + box1[3] / 2
-        b2_x1, b2_x2 = box2[0] - box2[2] / 2, box2[0] + box2[2] / 2
-        b2_y1, b2_y2 = box2[1] - box2[3] / 2, box2[1] + box2[3] / 2
-
-    # Intersection area
-    inter = (torch.min(b1_x2, b2_x2) - torch.max(b1_x1, b2_x1)).clamp(0) * \
-            (torch.min(b1_y2, b2_y2) - torch.max(b1_y1, b2_y1)).clamp(0)
-
-    # Union Area
-    w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1 + eps
-    w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1 + eps
-    union = w1 * h1 + w2 * h2 - inter + eps
-
-    iou = inter / union
-    if GIoU or DIoU or CIoU or EIoU or ECIoU:
-        cw = torch.max(b1_x2, b2_x2) - torch.min(b1_x1, b2_x1)  # convex (smallest enclosing box) width
-        ch = torch.max(b1_y2, b2_y2) - torch.min(b1_y1, b2_y1)  # convex height
-        if CIoU or DIoU or EIoU or ECIoU:  # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
-            c2 = cw ** 2 + ch ** 2 + eps  # convex diagonal squared
-            rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2) ** 2 +
-                    (b2_y1 + b2_y2 - b1_y1 - b1_y2) ** 2) / 4  # center distance squared
-            if DIoU:
-                return iou - rho2 / c2  # DIoU
-            elif CIoU:  # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
-                v = (4 / math.pi ** 2) * torch.pow(torch.atan(w2 / h2) - torch.atan(w1 / h1), 2)
-                with torch.no_grad():
-                    alpha = v / ((1 + eps) - iou + v)
-                return iou - (rho2 / c2 + v * alpha)  # CIoU
-            elif EIoU: # Efficient IoU https://arxiv.org/abs/2101.08158
-                rho3 = (w1-w2) **2
-                c3 = cw ** 2 + eps
-                rho4 = (h1-h2) **2
-                c4 = ch ** 2 + eps
-                return iou - rho2 / c2 - rho3 / c3 - rho4 / c4  # EIoU
-            elif ECIoU:
-                v = (4 / math.pi ** 2) * torch.pow(torch.atan(w2 / h2) - torch.atan(w1 / h1), 2)
-                with torch.no_grad():
-                    alpha = v / ((1 + eps) - iou + v)
-                rho3 = (w1-w2) **2
-                c3 = cw ** 2 + eps
-                rho4 = (h1-h2) **2
-                c4 = ch ** 2 + eps
-                return iou - v * alpha - rho2 / c2 - rho3 / c3 - rho4 / c4  # ECIoU
-        else:  # GIoU https://arxiv.org/pdf/1902.09630.pdf
-            c_area = cw * ch + eps  # convex area
-            return iou - (c_area - union) / c_area  # GIoU
-    else:
-        return iou  # IoU
-
-
-def box_iou(box1, box2):
-    # https://github.com/pytorch/vision/blob/master/torchvision/ops/boxes.py
+def increment_path(path_: str, exist_ok: bool = False, sep: str = "", mkdir: bool = False) \
+        -> Path:
+    """Increment file or directory path.
+    i.e. runs/exp --> runs/exp{sep}2, runs/exp{sep}3, ... etc.
+    :param path_: path to use increment path
+    :param exist_ok: Check if the path already exists and uses the path if exists.
+    :param sep: separator string
+    :param mkdir: create directory if the path does not exist.
+    :return: incremented path.
     """
-    Return intersection-over-union (Jaccard index) of boxes.
-    Both sets of boxes are expected to be in (x1, y1, x2, y2) format.
-    Arguments:
-        box1 (Tensor[N, 4])
-        box2 (Tensor[M, 4])
-    Returns:
-        iou (Tensor[N, M]): the NxM matrix containing the pairwise
-            IoU values for every element in boxes1 and boxes2
-    """
-
-    def box_area(box):
-        # box = 4xn
-        return (box[2] - box[0]) * (box[3] - box[1])
-
-    area1 = box_area(box1.T)
-    area2 = box_area(box2.T)
-
-    # inter(N,M) = (rb(N,M,2) - lt(N,M,2)).clamp(0).prod(2)
-    inter = (torch.min(box1[:, None, 2:], box2[:, 2:]) - torch.max(box1[:, None, :2], box2[:, :2])).clamp(0).prod(2)
-    return inter / (area1[:, None] + area2 - inter)  # iou = inter / (area1 + area2 - inter)
-
-
-def wh_iou(wh1, wh2):
-    # Returns the nxm IoU matrix. wh1 is nx2, wh2 is mx2
-    wh1 = wh1[:, None]  # [N,1,2]
-    wh2 = wh2[None]  # [1,M,2]
-    inter = torch.min(wh1, wh2).prod(2)  # [N,M]
-    return inter / (wh1.prod(2) + wh2.prod(2) - inter)  # iou = inter / (area1 + area2 - inter)
-
-
-def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, merge=False, classes=None, agnostic=False):
-    """Performs Non-Maximum Suppression (NMS) on inference results
-
-    Returns:
-         detections with shape: nx6 (x1, y1, x2, y2, conf, cls)
-    """
-
-    nc = prediction[0].shape[1] - 5  # number of classes
-    xc = prediction[..., 4] > conf_thres  # candidates
-
-    # Settings
-    min_wh, max_wh = 2, 4096  # (pixels) minimum and maximum box width and height
-    max_det = 300  # maximum number of detections per image
-    time_limit = 10.0  # seconds to quit after
-    redundant = True  # require redundant detections
-    multi_label = nc > 1  # multiple labels per box (adds 0.5ms/img)
-
-    t = time.time()
-    output = [torch.zeros(0, 6)] * prediction.shape[0]
-    for xi, x in enumerate(prediction):  # image index, image inference
-        # Apply constraints
-        # x[((x[..., 2:4] < min_wh) | (x[..., 2:4] > max_wh)).any(1), 4] = 0  # width-height
-        x = x[xc[xi]]  # confidence
-
-        # If none remain process next image
-        if not x.shape[0]:
-            continue
-
-        # Compute conf
-        x[:, 5:] *= x[:, 4:5]  # conf = obj_conf * cls_conf
-
-        # Box (center x, center y, width, height) to (x1, y1, x2, y2)
-        box = xywh2xyxy(x[:, :4])
-
-        # Detections matrix nx6 (xyxy, conf, cls)
-        if multi_label:
-            i, j = (x[:, 5:] > conf_thres).nonzero(as_tuple=False).T
-            x = torch.cat((box[i], x[i, j + 5, None], j[:, None].float()), 1)
-        else:  # best class only
-            conf, j = x[:, 5:].max(1, keepdim=True)
-            x = torch.cat((box, conf, j.float()), 1)[conf.view(-1) > conf_thres]
-
-        # Filter by class
-        if classes:
-            x = x[(x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)]
-
-        # Apply finite constraint
-        # if not torch.isfinite(x).all():
-        #     x = x[torch.isfinite(x).all(1)]
-
-        # If none remain process next image
-        n = x.shape[0]  # number of boxes
-        if not n:
-            continue
-
-        # Sort by confidence
-        # x = x[x[:, 4].argsort(descending=True)]
-
-        # Batched NMS
-        c = x[:, 5:6] * (0 if agnostic else max_wh)  # classes
-        boxes, scores = x[:, :4] + c, x[:, 4]  # boxes (offset by class), scores
-        i = torch.ops.torchvision.nms(boxes, scores, iou_thres)
-        if i.shape[0] > max_det:  # limit detections
-            i = i[:max_det]
-        if merge and (1 < n < 3E3):  # Merge NMS (boxes merged using weighted mean)
-            # update boxes as boxes(i,4) = weights(i,n) * boxes(n,4)
-            iou = box_iou(boxes[i], boxes) > iou_thres  # iou matrix
-            weights = iou * scores[None]  # box weights
-            x[i, :4] = torch.mm(weights, x[:, :4]).float() / weights.sum(1, keepdim=True)  # merged boxes
-            if redundant:
-                i = i[iou.sum(1) > 1]  # require redundancy
-
-        output[xi] = x[i]
-        if (time.time() - t) > time_limit:
-            break  # time limit exceeded
-
-    return output
-
-
-def strip_optimizer(f='weights/best.pt', s=''):  # from utils.general import *; strip_optimizer()
-    # Strip optimizer from 'f' to finalize training, optionally save as 's'
-    x = torch.load(f, map_location=torch.device('cpu'))
-    x['optimizer'] = None
-    x['training_results'] = None
-    x['epoch'] = -1
-    #x['model'].half()  # to FP16
-    #for p in x['model'].parameters():
-    #    p.requires_grad = False
-    torch.save(x, s or f)
-    mb = os.path.getsize(s or f) / 1E6  # filesize
-    print('Optimizer stripped from %s,%s %.1fMB' % (f, (' saved as %s,' % s) if s else '', mb))
-
-
-def print_mutation(hyp, results, yaml_file='hyp_evolved.yaml', bucket=''):
-    # Print mutation results to evolve.txt (for use with train.py --evolve)
-    a = '%10s' * len(hyp) % tuple(hyp.keys())  # hyperparam keys
-    b = '%10.3g' * len(hyp) % tuple(hyp.values())  # hyperparam values
-    c = '%10.4g' * len(results) % results  # results (P, R, mAP@0.5, mAP@0.5:0.95, val_losses x 3)
-    print('\n%s\n%s\nEvolved fitness: %s\n' % (a, b, c))
-
-    if bucket:
-        url = 'gs://%s/evolve.txt' % bucket
-        if gsutil_getsize(url) > (os.path.getsize('evolve.txt') if os.path.exists('evolve.txt') else 0):
-            os.system('gsutil cp %s .' % url)  # download evolve.txt if larger than local
-
-    with open('evolve.txt', 'a') as f:  # append result
-        f.write(c + b + '\n')
-    x = np.unique(np.loadtxt('evolve.txt', ndmin=2), axis=0)  # load unique rows
-    x = x[np.argsort(-fitness(x))]  # sort
-    np.savetxt('evolve.txt', x, '%10.3g')  # save sort by fitness
-
-    # Save yaml
-    for i, k in enumerate(hyp.keys()):
-        hyp[k] = float(x[0, i + 7])
-    with open(yaml_file, 'w') as f:
-        results = tuple(x[0, :7])
-        c = '%10.4g' * len(results) % results  # results (P, R, mAP@0.5, mAP@0.5:0.95, val_losses x 3)
-        f.write('# Hyperparameter Evolution Results\n# Generations: %g\n# Metrics: ' % len(x) + c + '\n\n')
-        yaml.dump(hyp, f, sort_keys=False)
-
-    if bucket:
-        os.system('gsutil cp evolve.txt %s gs://%s' % (yaml_file, bucket))  # upload
-
-
-def apply_classifier(x, model, img, im0):
-    # applies a second stage classifier to yolo outputs
-    im0 = [im0] if isinstance(im0, np.ndarray) else im0
-    for i, d in enumerate(x):  # per image
-        if d is not None and len(d):
-            d = d.clone()
-
-            # Reshape and pad cutouts
-            b = xyxy2xywh(d[:, :4])  # boxes
-            b[:, 2:] = b[:, 2:].max(1)[0].unsqueeze(1)  # rectangle to square
-            b[:, 2:] = b[:, 2:] * 1.3 + 30  # pad
-            d[:, :4] = xywh2xyxy(b).long()
-
-            # Rescale boxes from img_size to im0 size
-            scale_coords(img.shape[2:], d[:, :4], im0[i].shape)
-
-            # Classes
-            pred_cls1 = d[:, 5].long()
-            ims = []
-            for j, a in enumerate(d):  # per item
-                cutout = im0[i][int(a[1]):int(a[3]), int(a[0]):int(a[2])]
-                im = cv2.resize(cutout, (224, 224))  # BGR
-                # cv2.imwrite('test%i.jpg' % j, cutout)
-
-                im = im[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
-                im = np.ascontiguousarray(im, dtype=np.float32)  # uint8 to float32
-                im /= 255.0  # 0 - 255 to 0.0 - 1.0
-                ims.append(im)
-
-            pred_cls2 = model(torch.Tensor(ims).to(d.device)).argmax(1)  # classifier prediction
-            x[i] = x[i][pred_cls1 == pred_cls2]  # retain matching class detections
-
-    return x
-
-
-def increment_path(path, exist_ok=True, sep=''):
-    # Increment path, i.e. runs/exp --> runs/exp{sep}0, runs/exp{sep}1 etc.
-    path = Path(path)  # os-agnostic
-    if (path.exists() and exist_ok) or (not path.exists()):
-        return str(path)
-    else:
+    path = Path(path_)  # os-agnostic
+    if path.exists() and not exist_ok:
+        suffix = path.suffix
+        path = path.with_suffix("")
         dirs = glob.glob(f"{path}{sep}*")  # similar paths
         matches = [re.search(rf"%s{sep}(\d+)" % path.stem, d) for d in dirs]
         i = [int(m.groups()[0]) for m in matches if m]  # indices
         n = max(i) + 1 if i else 2  # increment number
-        return f"{path}{sep}{n}"  # update path
+        path = Path(f"{path}{sep}{n}{suffix}")  # update path
+
+    _dir = path if path.suffix == "" else path.parent  # directory
+    if not _dir.exists() and mkdir:
+        _dir.mkdir(parents=True, exist_ok=True)  # make directory
+
+    return path
+
+
+class TimeChecker:
+    """Time analyzer class."""
+
+    def __init__(
+            self,
+            title: str = "",
+            ignore_thr: float = 0.05,
+            sort: bool = True,
+            add_start: bool = True,
+            cuda_sync: bool = False,
+    ) -> None:
+        """Initialize TimeChecker class.
+        :param title: name of the time analysis
+        :param ignore_thr: time percentage that took below {ignore_thr}% will be ignored for the logging.
+        :param sort: log sorted by time consumption ratios
+        :param add_start: auto add start time
+                         TimeChecker requires at least two time checks.
+                         The first time will always be used as the start time.
+        :param cuda_sync: Use cuda synchronized time.
+        """
+        self.times: Dict[str, List[float]] = dict()
+        self.name_idx: Dict[str, int] = dict()
+        self.idx_name: List[str] = []
+
+        self.title = title
+        self.ignore_thr = ignore_thr
+        self.sort = sort
+        self.cuda_sync = cuda_sync
+
+        if add_start:
+            self.add("start")
+
+    def __getitem__(self, name: str) -> Tuple[float, int]:
+        """Get time taken.
+        :returns:
+            time took(s)
+            Number of times that {name} event occur.
+        """
+        idx = self.name_idx[name]
+        name_p = self.idx_name[idx - 1]
+
+        times_0 = self.times[name_p]
+        times_1 = self.times[name]
+
+        n_time = min(len(times_0), len(times_1))
+        time_took = 0.0
+        for i in range(n_time):
+            time_took += times_1[i] - times_0[i]
+
+        return time_took, n_time
+
+    def add(self, name: str) -> None:
+        """Add time point."""
+        if self.cuda_sync:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+
+        if name not in self.name_idx:
+            self.name_idx[name] = len(self.times)
+            self.idx_name.append(name)
+            self.times[name] = [time.monotonic()]
+        else:
+            self.times[name].append(time.monotonic())
+
+    def clear(self) -> None:
+        """Clear time records."""
+        self.times.clear()
+        self.name_idx.clear()
+        self.idx_name.clear()
+
+    @staticmethod
+    def _convert_unit_str(value: float) -> Tuple[float, str]:
+        """Convert second unit to s, ms, ns metric.
+
+        Args:
+            value: time(s)
+        Returns:
+            Converted time value.
+            Unit of the time value(s, ms, ns).
+        """
+        if value < 0.001:
+            value *= 1000 * 1000
+            unit = "ns"
+        elif value < 1:
+            value *= 1000
+            unit = "ms"
+        else:
+            unit = "s"
+
+        return value, unit
+
+    @property
+    def total_time(self) -> float:
+        """Get total time."""
+        time_tooks = [self[self.idx_name[i]][0] for i in range(1, len(self.times))]
+
+        return sum(time_tooks)
+
+    def __str__(self) -> str:
+        """Convert time checks to the log string."""
+        msg = f"[{self.title[-15:]:>15}] "
+        time_total = self.total_time
+        time_tooks = [self[self.idx_name[i]] for i in range(1, len(self.times))]
+
+        if self.sort:
+            idx = np.argsort(np.array(time_tooks)[:, 0])[::-1]
+        else:
+            idx = np.arange(0, len(self.times) - 1)
+
+        for i in idx:
+            time_took = time_tooks[i][0]
+            time_ratio = time_took / (time_total + 1e-16)
+
+            time_took, unit = self._convert_unit_str(time_took)
+
+            if time_ratio > self.ignore_thr:
+                msg += f"{self.idx_name[i + 1][:10]:>11}: {time_took:4.1f}{unit}({time_ratio * 100:4.1f}%), "
+
+        time_total, unit = self._convert_unit_str(time_total)
+        msg += f"{'Total':>11}: {time_total:4.1f}{unit}"
+        return msg
