@@ -13,6 +13,7 @@ from training.train_model_builder import TrainModelBuilder
 from training.trainer import Trainer
 from logger import colorstr, save_logs
 from logger import logger
+from utils.constants import TRAIN_SUBDIR
 from utils.general import increment_path
 from models.model_manager import YOLOModelManager
 
@@ -87,7 +88,7 @@ if __name__ == "__main__":
     base_log_dir = train_cfg["train"]["log_dir"] or "exp"
     log_dir = str(
         increment_path(
-            path_=str(Path(base_log_dir) / "train" / datetime.now().strftime("%Y_%m%d_runs")),
+            path_=str(Path(base_log_dir) / TRAIN_SUBDIR / datetime.now().strftime("%Y_%m%d_runs")),
             mkdir=True))
 
     train_cfg["train"]["log_dir"] = log_dir

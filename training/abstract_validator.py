@@ -8,6 +8,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from logger import logger, colorstr
+from utils.constants import VAL_SUBDIR
 from utils.general import increment_path
 
 
@@ -73,7 +74,7 @@ class AbstractValidator(ABC):
 
         if incremental_log_dir:
             self.log_dir = increment_path(
-                os.path.join(log_dir, "val", datetime.now().strftime("%Y_%m%d_runs"))
+                os.path.join(log_dir, VAL_SUBDIR, datetime.now().strftime("%Y_%m%d_runs"))
             )
         else:
             self.log_dir = log_dir

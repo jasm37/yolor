@@ -13,6 +13,7 @@ from data_loading.cots_data_splitter import COTSDataSplitter
 from logger import colorstr, get_logger
 from models.models import load_darknet_model
 from training.train_model_builder import TrainModelBuilder
+from utils.constants import VAL_SUBDIR
 from utils.general import increment_path
 from models.model_manager import YOLOModelManager
 from utils.torch_utils import count_param
@@ -180,7 +181,7 @@ if __name__ == "__main__":
     base_log_dir = train_cfg["train"]["log_dir"] or "exp"
     log_dir = str(
         increment_path(
-            path_=str(Path(base_log_dir) / "eval" / datetime.now().strftime("%Y_%m%d_runs")),
+            path_=str(Path(base_log_dir) / VAL_SUBDIR / datetime.now().strftime("%Y_%m%d_runs")),
             mkdir=True))
 
     # Set configurations

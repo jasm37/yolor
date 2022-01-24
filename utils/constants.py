@@ -107,7 +107,8 @@ LABELS = {
         "tvmonitor",
     ],
 }
-
+TRAIN_SUBDIR = "train"
+VAL_SUBDIR = "val"
 """Plot color setting."""
 PLOT_COLOR = tuple(
     map(
