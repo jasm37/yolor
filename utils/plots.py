@@ -12,11 +12,6 @@ from typing import Dict, List, Optional, Tuple, Union, Sequence
 from utils.general import xywh2xyxy
 from utils.constants import PLOT_COLOR
 
-# Settings
-import matplotlib
-
-matplotlib.use('Agg')  # for writing to files only
-
 
 def hist2d(x: np.ndarray, y: np.ndarray, n: int = 100) -> np.ndarray:
     """Draw 2D histogram.
@@ -26,7 +21,7 @@ def hist2d(x: np.ndarray, y: np.ndarray, n: int = 100) -> np.ndarray:
     :returns: a numpy array which contains histogram 2d.
     """
     # 2d histogram used in labels.png and evolve.png
-    xedges, yedges = np.linspace(x.min(), x.max(), n), np.linspace(y.min(), y.max(), n) # noqa
+    xedges, yedges = np.linspace(x.min(), x.max(), n), np.linspace(y.min(), y.max(), n)  # noqa
     hist, xedges, yedges = np.histogram2d(x, y, (xedges, yedges))
     xidx = np.clip(np.digitize(x, xedges) - 1, 0, hist.shape[0] - 1)
     yidx = np.clip(np.digitize(y, yedges) - 1, 0, hist.shape[1] - 1)
@@ -39,27 +34,28 @@ def plot_one_box(
         color: Union[Tuple[int, int, int], List[int]] = None,
         label: str = None,
         line_thickness: float = None,
+        alpha: float = 1.,
 ) -> None:
     """Plot one bounding box on image
-    :param x: box coordinates.
-    :param img: base image to plot label.
-    :param color: box edge color.
-    :param label: label to plot.
-    :param line_thickness: line thickness.
+    :param x: box coordinates
+    :param img: base image to plot label
+    :param color: box edge color
+    :param label: label to plot
+    :param line_thickness: line thickness
+    :param alpha: box transparency alpha
     """
-    tl = (
-            line_thickness or round(0.002 * (img.shape[0] + img.shape[1]) / 2) + 1
-    )  # line/font thickness
+    tl = line_thickness or round(0.002 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
+    _buffer = img.copy()
     color = color or [random.randint(0, 255) for _ in range(3)]
     c1, c2 = (int(x[0]), int(x[1])), (int(x[2]), int(x[3]))
-    cv2.rectangle(img, c1, c2, color, thickness=tl, lineType=cv2.LINE_AA)
+    cv2.rectangle(_buffer, c1, c2, color, thickness=tl, lineType=cv2.LINE_AA)
     if label:
         tf = max(tl - 1, 1)  # font thickness
         t_size = cv2.getTextSize(label, 0, fontScale=tl / 3, thickness=tf)[0]
         c2 = c1[0] + t_size[0], c1[1] - t_size[1] - 3
-        cv2.rectangle(img, c1, c2, color, -1, cv2.LINE_AA)  # filled
+        cv2.rectangle(_buffer, c1, c2, color, -1, cv2.LINE_AA)  # filled
         cv2.putText(
-            img,
+            _buffer,
             label,
             (c1[0], c1[1] - 2),
             0,
@@ -68,6 +64,7 @@ def plot_one_box(
             thickness=tf,
             lineType=cv2.LINE_AA,
         )
+    cv2.addWeighted(_buffer, alpha, img, 1 - alpha, 0, img)
 
 
 def plot_label_histogram(labels: np.ndarray, save_dir: Union[str, Path] = "") -> None:
@@ -117,14 +114,34 @@ def format_and_plot_boxes(
         class_id: int,
         block_x: float,
         block_y: float,
-        unnormalize: bool,
+        denormalize: bool,
         w: int,
         h: int,
         names: list,
         line_width: int,
         color_list: List[tuple],
         mosaic: np.ndarray,
-        conf_thresh: float = 0.3):
+        conf_thresh: float = 0.3,
+        prefix: str = "",
+        alpha: float = 1.
+) -> None:
+    """
+    Format detections and plot them into the given mosaic image
+    :param arrays: detection array
+    :param class_id: object/class id
+    :param block_x: block-x to select position in the mosaic
+    :param block_y: block-y to select position in the mosaic
+    :param denormalize: whether to denormalize the boxes
+    :param w: image width
+    :param h: image_height
+    :param names: class names
+    :param line_width: box line width
+    :param color_list: color list for the classes
+    :param mosaic: mosaic image where to plot into
+    :param conf_thresh: minimum threshold to plot detections
+    :param prefix: prefix to prepend to class names in the image
+    :param alpha: transparency alpha for the boxes and text
+    """
     image_preds = arrays[arrays[:, 0] == class_id]
     boxes = xywh2xyxy(image_preds[:, 2:6]).T
     classes = image_preds[:, 1].astype("int")  # type: ignore
@@ -132,33 +149,34 @@ def format_and_plot_boxes(
     conf: Optional[np.ndarray] = (
         None if gt else image_preds[:, 6]
     )  # check for confidence presence (gt vs pred)
-    if unnormalize:
+    if denormalize:
         boxes[[0, 2]] *= w
-        boxes[[0, 2]] += block_x
         boxes[[1, 3]] *= h
-        boxes[[1, 3]] += block_y
+    boxes[[0, 2]] += block_x
+    boxes[[1, 3]] += block_y
     for j, box in enumerate(boxes.T):
         cls = int(classes[j])
         _color = color_list[cls % len(color_list)]
         cls = names[cls] if names else cls
 
         if gt or conf[j] > conf_thresh:
-            label = "%s" % cls if gt else "%s %.1f" % (cls, conf[j])  # type: ignore
+            label = prefix + "%s" % cls if gt else "%s %.1f" % (cls, conf[j])  # type: ignore
             plot_one_box(
-                box, mosaic, label=label, color=_color, line_thickness=line_width
+                box, mosaic, label=label, color=_color, line_thickness=line_width, alpha=alpha
             )
 
 
 def plot_images(
         images: Union[torch.Tensor, np.ndarray],
         targets: Union[torch.Tensor, np.ndarray] = np.array([]),
-        predictions: Union[torch.Tensor, np.ndarray] = np.array([]),
+        predictions: Union[Sequence[torch.Tensor], Sequence[np.ndarray]] = np.array([]),
         unnormalize: bool = True,
         paths: Optional[Sequence[str]] = None,
         fname: str = "images.jpg",
         names: Optional[Union[tuple, list]] = None,
         max_size: int = 1280,
         max_subplots: int = 16,
+        resize_mosaic: bool = True
 ) -> np.ndarray:
     """Plot images."""
     tl = 3  # line thickness
@@ -172,8 +190,8 @@ def plot_images(
     else:
         np_targets = targets
 
-    if isinstance(predictions, torch.Tensor):
-        np_predictions = predictions.cpu().numpy()
+    if len(predictions) > 0 and isinstance(predictions[0], torch.Tensor):
+        np_predictions = [_pred.cpu().numpy() for _pred in predictions]  # type: Sequence[np.ndarray]
     else:
         np_predictions = predictions
 
@@ -219,11 +237,11 @@ def plot_images(
         mosaic[block_y: block_y + h, block_x: block_x + w, :] = img  # noqa
         if len(np_targets) > 0:
             format_and_plot_boxes(np_targets, i, block_x, block_y,
-                                  unnormalize, w, h, names, tl, color_lut, mosaic)
+                                  unnormalize, w, h, names, tl, color_lut, mosaic, prefix="t")
 
-        if len(np_predictions) > 0:
-            format_and_plot_boxes(np_predictions, i, block_x, block_y,
-                                  unnormalize, w, h, names, tl, color_lut[::-1], mosaic)
+        if len(np_predictions) > 0 and len(np_predictions[i]) > 0:
+            format_and_plot_boxes(np_predictions[i], i, block_x, block_y,
+                                  unnormalize, w, h, names, tl, color_lut[::-1], mosaic, prefix="p", alpha=0.6)
 
         # Draw image filename labels
         if paths is not None:
@@ -250,9 +268,10 @@ def plot_images(
         )
 
     if fname is not None:
-        mosaic = cv2.resize(
-            mosaic, (int(ns * w * 0.5), int(ns * h * 0.5)), interpolation=cv2.INTER_AREA
-        )
+        if resize_mosaic:
+            mosaic = cv2.resize(
+                mosaic, (int(ns * w * 0.5), int(ns * h * 0.5)), interpolation=cv2.INTER_AREA
+            )
         cv2.imwrite(str(fname), cv2.cvtColor(mosaic, cv2.COLOR_BGR2RGB))
 
     return mosaic
