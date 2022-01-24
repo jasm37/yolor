@@ -132,8 +132,8 @@ def labels_to_class_weights(labels: Union[list, np.ndarray, torch.Tensor], nc: i
     """
     if labels[0] is None:  # no labels loaded
         return torch.Tensor()
-
-    c_labels = np.concatenate(labels, 0)  # labels.shape = (866643, 5) for COCO
+    _labels = [label for label in labels if len(label) > 0]  # Only use non-empty labels
+    c_labels = np.concatenate(_labels, 0)  # labels.shape = (866643, 5) for COCO
     classes = c_labels[:, 0].astype(int)  # labels = [class xywh]
     weights = np.bincount(classes, minlength=nc)  # occurrences per class
 
