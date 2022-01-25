@@ -76,6 +76,7 @@ class Trainer(AbstractTrainer):
         self.loss = ComputeLoss(self.model)
         self.nbs = 64  # nominal batch size
         self.accumulate = max(round(self.nbs / self.cfg_train["batch_size"]), 1)
+        self.pretrained_optimizer = False
         self.optimizer, self.scheduler = self._init_optimizer()
         self.val_maps = np.zeros(self.model.nc)  # map per class
         self.scaler = None  # type: Optional[amp.GradScaler]
@@ -161,6 +162,7 @@ class Trainer(AbstractTrainer):
         if pretrained:
             ckpt = torch.load(self.cfg_train["weights"])
             if ckpt.get("optimizer") is not None:
+                self.pretrained_optimizer = True
                 optimizer.load_state_dict(ckpt["optimizer"][0])
                 self.best_score = ckpt["best_score"]
 
@@ -274,7 +276,7 @@ class Trainer(AbstractTrainer):
         """
         num_integrated_batches = batch_idx + len(self.train_dataloader) * epoch
 
-        if num_integrated_batches <= self.num_warmups:
+        if not self.pretrained_optimizer and num_integrated_batches <= self.num_warmups:
             self.warmup(num_integrated_batches, epoch)
 
         imgs, labels, paths, shapes = train_batch
