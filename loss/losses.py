@@ -134,10 +134,11 @@ class QFocalLoss(nn.Module):
 class ComputeLoss:
     """Compute YOLO Loss."""
 
-    def __init__(self, model: nn.Module, autobalance: bool = False) -> None:
+    def __init__(self, model: nn.Module, autobalance: bool = False, use_qfloss: bool = False) -> None:
         """Initialize instance
         :param model: YOLOModel or nn.Module which last layer is YOLOHead
-        :param autobalance: Auto balance
+        :param autobalance: Automatic loss gain balance for equal loss contribution
+        :param use_qfloss: Whether to use QFocalLoss or not
         """
         self._yolo_layers = model.yolo_layers
         self._module_list = model.module_list
@@ -161,8 +162,14 @@ class ComputeLoss:
 
         # Focal loss
         gamma = hyp["fl_gamma"]  # focal loss gamma
+
+        # Set normal or qualitative focal loss
+        focal_loss_func = FocalLoss
+        if use_qfloss:
+            focal_loss_func = QFocalLoss
+
         if gamma > 0:
-            bce_cls, bce_obj = FocalLoss(bce_cls, gamma), FocalLoss(bce_obj, gamma)
+            bce_cls, bce_obj = focal_loss_func(bce_cls, gamma), focal_loss_func(bce_obj, gamma)
 
         head = model.module_list[-1]
         self.balance = {3: [4.0, 1.0, 0.4]}.get(head.nl, [4.0, 1.0, 0.25, 0.06, 0.02])
