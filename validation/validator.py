@@ -12,10 +12,10 @@ from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from data_loading.label_adapters import scale_coords, xywh2xyxy
 from utils.plots import plot_images
 from loss.losses import ComputeLoss
 from validation.abstract_validator import AbstractValidator
-from utils.general import scale_coords, xywh2xyxy
 from logger import logger
 from metrics.metrics import ConfusionMatrix, ap_per_class, box_iou, non_max_suppression
 from utils.tta_utils import inference_with_tta

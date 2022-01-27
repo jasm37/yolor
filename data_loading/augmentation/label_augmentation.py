@@ -5,7 +5,7 @@ from typing import List, Tuple, Union
 import cv2
 import numpy as np
 
-from utils.general import box_candidates, resample_segments, segment2box
+from data_loading.label_adapters import resample_segments, segment2box, box_candidates_mask
 from metrics.metrics import bbox_ioa
 
 
@@ -281,7 +281,7 @@ class ImgAugmentator:
                 new[:, [1, 3]] = new[:, [1, 3]].clip(0, height)
 
             # filter candidates
-            i = box_candidates(
+            i = box_candidates_mask(
                 box1=targets[:, 1:5].T * s,
                 box2=new.T,
                 area_thr=0.01 if use_segments else 0.10,

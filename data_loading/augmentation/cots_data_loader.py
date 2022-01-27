@@ -6,9 +6,9 @@ import pandas as pd
 import torch
 
 from data_loading.augmentation.label_augmentation import ImgAugmentator as Aug
-from data_loading.csv_parser import CsvParser
+from data_loading.label_adapters import xywh2xyxy, xyxy2xywh, xyn2xy
+from data_loading.parsers.csv_parser import CsvParser
 from data_loading.data_loader import LoadImages
-from utils.general import xyn2xy, xywh2xyxy, xyxy2xywh
 
 
 class LoadCOTSImagesAndLabels(LoadImages):

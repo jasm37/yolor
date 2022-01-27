@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from typing import Dict, List, Optional, Tuple, Union, Sequence
 
-from utils.general import xywh2xyxy
+from data_loading.label_adapters import xywh2xyxy
 from utils.constants import PLOT_COLOR
 
 

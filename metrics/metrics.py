@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torchvision
 
-from utils.general import xywh2xyxy
+from data_loading.label_adapters import xywh2xyxy
 from utils.plots import plot_pr_curve, plot_mc_curve
 from logger import logger
 

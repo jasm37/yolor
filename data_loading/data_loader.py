@@ -14,8 +14,8 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from data_loading.augmentation.label_augmentation import ImgAugmentator as Aug
+from data_loading.label_adapters import xywh2xyxy, xyn2xy, xyxy2xywh, segments2boxes
 from utils.constants import LABELS
-from utils.general import segments2boxes, xyn2xy, xywh2xyxy, xyxy2xywh
 from logger import logger
 
 IMG_EXTS = [".bmp", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".dng"]
