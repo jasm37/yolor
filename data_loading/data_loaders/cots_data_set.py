@@ -8,7 +8,7 @@ import torch
 from data_loading.augmentation.label_augmentation import ImgAugmentator as Aug
 from data_loading.label_adapters import xywh2xyxy, xyxy2xywh, xyn2xy
 from data_loading.parsers.csv_parser import CsvParser
-from data_loading.data_loader import LoadImages
+from data_loading.data_loaders.data_sets import LoadImages, letterbox
 
 
 class LoadCOTSImagesAndLabels(LoadImages):
@@ -118,8 +118,9 @@ class LoadCOTSImagesAndLabels(LoadImages):
         else:
             img, (h0, w0), (h1, w1) = self._load_image(index)
 
-            img, ratio, pad = self._letterbox(
+            img, ratio, pad = letterbox(
                 img,
+                stride=self.stride,
                 new_shape=shape,
                 auto=False,
                 scale_fill=False,

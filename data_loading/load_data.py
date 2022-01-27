@@ -5,8 +5,8 @@ import pandas as pd
 import torch
 
 from data_loading.augmentation.augmentation import MultiAugmentationPolicies
-from data_loading.augmentation.cots_data_loader import LoadCOTSImagesAndLabels
-from data_loading.data_loader import LoadImagesAndLabels
+from data_loading.data_loaders.cots_data_set import LoadCOTSImagesAndLabels
+from data_loading.data_loaders.data_sets import LoadImagesAndLabels
 from logger import logger
 from utils.general import TimeChecker
 from utils.torch_utils import torch_distributed_zero_first

@@ -8,7 +8,7 @@ import torch
 import yaml
 from torch import nn
 
-from data_loading.augmentation.cots_data_loader import LoadCOTSImagesAndLabels
+from data_loading.data_loaders.cots_data_set import LoadCOTSImagesAndLabels
 from data_loading.cots_data_splitter import COTSDataSplitter
 from logger import colorstr, get_logger
 from models.models import load_darknet_model
