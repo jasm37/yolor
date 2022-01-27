@@ -106,13 +106,13 @@ class LoadCOTSImagesAndLabels(LoadImages):
         )
 
         if random.random() < self.yolo_augmentation.get("mosaic", 0.0):
-            img, labels = self._load_mosaic(index)
+            img, labels = self._load_mosaic9(index)
             shapes = (0, 0), ((0.0, 0.0), (0.0, 0.0))
             if random.random() < self.yolo_augmentation.get("mixup", 1.0):
                 img, labels = Aug.mixup(
                     img,
                     labels,
-                    *self._load_mosaic(random.randint(0, len(self.img_files) - 1)),
+                    *self._load_mosaic9(random.randint(0, len(self.img_files) - 1)),
                 )
 
         else:
@@ -191,9 +191,9 @@ class LoadCOTSImagesAndLabels(LoadImages):
 
         return torch_img, labels_out, self.img_files[index], shapes
 
-    def _load_mosaic(self, index: int) -> Tuple[np.ndarray, np.ndarray]:
+    def _load_mosaic4(self, index: int) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Load mosaic image given the base image index
+        Creates a 4 image-mosaic given the base image index
         :param index: base image index
         :return:
             mosaic image from the base image and 3 others
@@ -303,6 +303,118 @@ class LoadCOTSImagesAndLabels(LoadImages):
             border=(-img_half_size, -img_half_size),
         )  # border to remove
 
+        return mosaic_img, mosaic_labels_np
+
+    def _load_mosaic9(self, index):
+        """
+        Creates a 9 image-mosaic given the base image index
+        :param index: base image index
+        :return:
+          mosaic image from the base image and 8 others
+          mosaic labels from all joined images
+        """
+        img_half_size = self.img_size // 2
+        indices = [index] + random.choices(self.indices, k=8)  # 8 additional image indices
+        random.shuffle(indices)
+        loaded_imgs = [self._load_image(idx) for idx in indices]
+        s = self.img_size
+        mosaic_img = np.full(
+            (
+                int(s * 3),
+                int(s * 3),
+                loaded_imgs[0][0].shape[2],
+            ),
+            114,
+            dtype=np.uint8,
+        )
+        mosaic_labels_np = []
+        mosaic_segments = []
+
+        assert len(loaded_imgs) == 9  # This must be the case for the following loop to work properly
+        for i, (img, _, (h, w)) in enumerate(loaded_imgs):
+            if i == 0:  # center
+                mosaic_img = np.full((s * 3, s * 3, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
+                h0, w0 = h, w
+                c = s, s, s + w, s + h  # xmin, ymin, xmax, ymax (base) coordinates
+            elif i == 1:  # top
+                c = s, s - h, s + w, s
+            elif i == 2:  # top right
+                c = s + wp, s - h, s + wp + w, s
+            elif i == 3:  # right
+                c = s + w0, s, s + w0 + w, s + h
+            elif i == 4:  # bottom right
+                c = s + w0, s + hp, s + w0 + w, s + hp + h
+            elif i == 5:  # bottom
+                c = s + w0 - w, s + h0, s + w0, s + h0 + h
+            elif i == 6:  # bottom left
+                c = s + w0 - wp - w, s + h0, s + w0 - wp, s + h0 + h
+            elif i == 7:  # left
+                c = s - w, s + h0 - h, s, s + h0
+            elif i == 8:  # top left
+                c = s - w, s + h0 - hp - h, s, s + h0 - hp
+
+            padx, pady = c[:2]
+            x1, y1, x2, y2 = (max(x, 0) for x in c)  # allocate coords
+
+            # Labels
+            if self.labels[indices[i]].shape[0] == 0:
+                labels = np.empty((0, 5), dtype=np.float32)
+                segments = []
+            else:
+                labels = self.labels[indices[i]].copy()
+                segments = self.segments[indices[i]].copy()
+
+            if labels.size:
+                labels[:, 1:] = xywh2xyxy(labels[:, 1:], wh=(w, h),
+                                          pad=(padx, pady))  # normalized xywh to pixel xyxy format
+                segments = [xyn2xy(x, wh=(w, h), pad=(padx, pady)) for x in segments]
+            mosaic_labels_np.append(labels)
+            mosaic_segments.extend(segments)
+
+            # Image
+            mosaic_img[y1:y2, x1:x2] = img[y1 - pady:, x1 - padx:]  # img9[ymin:ymax, xmin:xmax]
+            hp, wp = h, w  # height, width previous
+
+        # Offset
+        yc, xc = (int(random.uniform(0, s)) for _ in (-img_half_size, -img_half_size))  # mosaic center x, y
+        mosaic_img = mosaic_img[yc:yc + 2 * s, xc:xc + 2 * s]
+
+        # Concat/clip labels
+        mosaic_labels_np = np.concatenate(mosaic_labels_np, 0)
+        mosaic_labels_np[:, [1, 3]] -= xc
+        mosaic_labels_np[:, [2, 4]] -= yc
+        c = np.array([xc, yc])  # centers
+        mosaic_segments = [x - c for x in mosaic_segments]
+
+        for x in (mosaic_labels_np[:, 1:], *mosaic_segments):
+            np.clip(x, 0, 2 * s, out=x)
+
+        mosaic_img, mosaic_labels_np, mosaic_segments = Aug.copy_paste(
+            mosaic_img,
+            mosaic_labels_np,
+            mosaic_segments,
+            prob=self.yolo_augmentation.get("copy_paste", 0.0),
+        )
+
+        # Copy-paste 2
+        copy_paste_cfg = self.yolo_augmentation.get("copy_paste2", {})
+        if copy_paste_cfg.get("p", 0.0) > 0.0:
+            for _ in range(copy_paste_cfg.get("n_img", 3)):
+                mosaic_img, mosaic_labels_np, mosaic_segments = self._load_copy_paste(
+                    mosaic_img, mosaic_labels_np, mosaic_segments
+                )
+
+        mosaic_img, mosaic_labels_np = Aug.random_perspective(
+            mosaic_img,
+            mosaic_labels_np,
+            mosaic_segments,
+            degrees=self.yolo_augmentation.get("degrees", 0.0),
+            translate=self.yolo_augmentation.get("translate", 0.1),
+            scale=self.yolo_augmentation.get("scale", 0.5),
+            shear=self.yolo_augmentation.get("shear", 0.0),
+            perspective=self.yolo_augmentation.get("perspective", 0.0),
+            border=(-img_half_size, -img_half_size),  # border to remove
+        )
         return mosaic_img, mosaic_labels_np
 
     def _load_copy_paste(
