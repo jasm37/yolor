@@ -88,7 +88,7 @@ if __name__ == "__main__":
     base_log_dir = train_cfg["train"]["log_dir"] or "exp"
     log_dir = str(
         increment_path(
-            path_=str(Path(base_log_dir) / TRAIN_SUBDIR / datetime.now().strftime("%Y_%m%d_runs")),
+            path_=str(Path(base_log_dir) / TRAIN_SUBDIR / datetime.now().strftime("%Y_%m%d_%H_runs")),
             mkdir=True))
 
     train_cfg["train"]["log_dir"] = log_dir
@@ -134,7 +134,7 @@ if __name__ == "__main__":
 
     # Only for debugging
     if args.debug_imp:
-        data_splitter.reduce_df_sizes()  # reduce dataframe sizes
+        data_splitter.reduce_df_sizes(27)  # reduce dataframe sizes
         cfg_all['train_cfg']['train']['workers'] = 0  # Set workers = 0 to debug a single process
 
     # Set data loader and data set
