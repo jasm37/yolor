@@ -17,7 +17,7 @@ from utils.constants import VAL_SUBDIR
 from utils.general import increment_path
 from models.model_manager import YOLOModelManager
 from utils.torch_utils import count_param
-from training.validator import YoloValidator
+from validation.validator import YoloValidator
 
 LOGGER = get_logger(__name__)
 

@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from utils.plots import plot_images
 from loss.losses import ComputeLoss
-from training.abstract_validator import AbstractValidator
+from validation.abstract_validator import AbstractValidator
 from utils.general import scale_coords, xywh2xyxy
 from logger import logger
 from metrics.metrics import ConfusionMatrix, ap_per_class, box_iou, non_max_suppression
@@ -104,7 +104,7 @@ class YoloValidator(AbstractValidator):
         else:
             self.loss_fn = None
 
-        self.loss = torch.zeros(3, device=self.device)
+        self.loss = torch.zeros(4, device=self.device)
         self.seen: int = 0
         self.hybrid_label = hybrid_label
         self.show_plots = show_plot
@@ -171,7 +171,7 @@ class YoloValidator(AbstractValidator):
         :param train_out: output from model (detected)
         :param targets: target labels
         """
-        self.loss += self.loss_fn([x.float() for x in train_out], targets)[1][:3]
+        self.loss += self.loss_fn([x.float() for x in train_out], targets)[1][:4]
 
     def process_batch(
             self,

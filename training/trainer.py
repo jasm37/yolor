@@ -23,7 +23,7 @@ from logger import colorstr, logger
 from utils.plots import plot_images, plot_label_histogram
 from training.early_stopper import EarlyStopping
 from utils.torch_utils import de_parallel
-from training.validator import YoloValidator
+from validation.validator import YoloValidator
 
 from utils.torch_utils import ModelEMA
 
@@ -359,9 +359,10 @@ class Trainer(AbstractTrainer):
                 "mF2": val_result[0][3],
                 "mAP50": val_result[0][4],
                 "mAP50_95": val_result[0][5],
-                "loss_box": val_result[0][6],
-                "loss_obj": val_result[0][7],
-                "loss_cls": val_result[0][8],
+                "box_loss": val_result[0][6],
+                "obj_loss": val_result[0][7],
+                "cls_loss": val_result[0][8],
+                "total_loss": val_result[0][9],
                 "mAP50_by_cls": {
                     k: val_result[1][i]
                     for i, k in enumerate(self.val_dataloader.dataset.names)
@@ -374,13 +375,17 @@ class Trainer(AbstractTrainer):
                 # Store metrics
                 for label, val in metrics_dict.items():
                     if isinstance(val, float) or isinstance(val, int):
-                        self.tb_writer.add_scalar("metrics/" + label, val, self.current_epoch)
+                        if "loss" in label:
+                            self.tb_writer.add_scalar("val/" + label, val, self.current_epoch)
+                        else:
+                            self.tb_writer.add_scalar("metrics/" + label, val, self.current_epoch)
 
                 # Store loss values
                 loss_labels = ["box_loss", "obj_loss", "cls_loss", "total_loss"]
                 for label, val in zip(loss_labels, self.mloss):
                     self.tb_writer.add_scalar("train/" + label, val.item(), self.current_epoch)
 
+                # self.tb_writer.add_scalar("val/loss", self.validator.loss)
             self.val_maps = val_result[1]
 
             if metrics_dict["mF2"] > self.best_score:
