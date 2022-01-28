@@ -125,6 +125,7 @@ def xyn2xy(
 def xyxy2xywh(
         x: Union[torch.Tensor, np.ndarray],
         wh: Tuple[float, float] = (1.0, 1.0),
+        pad: Tuple[float, float] = (0.0, 0.0),
         clip_eps: Optional[float] = None,
         check_validity: bool = True,
 ) -> Union[torch.Tensor, np.ndarray]:
@@ -134,6 +135,7 @@ def xyxy2xywh(
     :param wh: image size (width, height)
                Give image size only if you want to
                normalized pixel coordinates to normalized coordinates
+    :param pad: image padded size (width and height)
     :param clip_eps: clip coordinates by wh with epsilon margin. If clip_eps is not None
                      epsilon value is recommended to be 1E-3
     :param check_validity: bounding box width and height validity check
@@ -149,8 +151,8 @@ def xyxy2xywh(
     if clip_eps is not None:
         y = clip_coords(y, (wh[0] - clip_eps, wh[1] - clip_eps))
 
-    y[:, 0] = ((x[:, 0] + x[:, 2]) / 2) / wh[0]  # x center
-    y[:, 1] = ((x[:, 1] + x[:, 3]) / 2) / wh[1]  # y center
+    y[:, 0] = ((x[:, 0] + x[:, 2]) / 2) / wh[0] + pad[0]  # x center
+    y[:, 1] = ((x[:, 1] + x[:, 3]) / 2) / wh[1] + pad[1]  # y center
     y[:, 2] = (x[:, 2] - x[:, 0]) / wh[0]  # width
     y[:, 3] = (x[:, 3] - x[:, 1]) / wh[1]  # height
 
