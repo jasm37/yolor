@@ -33,7 +33,7 @@ def clip_augmented(model: nn.Module, y: List) -> List:
     :returns: y: clipped tensors for augmented inferences
     """
     # number of detection layers (P3-P5)
-    nl = model.model[-1].nl  # type: ignore
+    nl = model.module_list[-1].nl  # type: ignore
     g = sum(4 ** x for x in range(nl))  # grid points
     e = 1  # exclude layer count
     i = (y[0].shape[1] // g) * sum(4 ** x for x in range(e))  # indices
@@ -57,7 +57,7 @@ def inference_with_tta(
     img_size = x.shape[-2:]  # height, width
     y = []  # outputs
     for si, fi in zip(s, f):
-        xi = scale_img(x.flip(fi) if fi else x, si, gs=int(model.stride.max()))  # type: ignore
+        xi = scale_img(x.flip(fi) if fi else x, si, gs=int(model.stride))  # type: ignore
         yi = model(xi)[0]  # forward
         yi = descale_pred(yi, fi, si, img_size)
         y.append(yi)
