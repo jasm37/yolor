@@ -245,7 +245,7 @@ if __name__ == "__main__":
     # Get updated model and device
     model, ema, device = train_builder.prepare()
     model_manager.model = model
-    model = model_manager.set_model_params(val_dataset, ema=ema)
+    model = model_manager.set_model_params(val_dataset.names, val_dataset.labels, ema=ema)
 
     if isinstance(model, torch.jit.ScriptModule):
         model.to(device).eval()

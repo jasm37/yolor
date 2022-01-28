@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, Optional, List
 
+import numpy as np
 import torch
 from torch import nn
 
@@ -147,11 +148,14 @@ class YOLOModelManager(AbstractModelManager):
         return self.model
 
     def set_model_params(
-            self, dataset: torch.utils.data.Dataset, ema: Optional["ModelEMA"] = None  # noqa
+            self,
+            class_names: List[str],
+            labels: List[np.ndarray],
+            ema: Optional["ModelEMA"] = None  # noqa
     ) -> nn.Module:
         """Set necessary model parameters required in YOLO.
-        :param dataset: torch dataset which includes labels and names.
-                        names contain class names ex) ['person', 'cup', ...]
+        :param class_names: data set class names
+        :param labels: data set labels to generate class weights
         :param ema: ema model to be set
         :return: self.model with parameters
         """
@@ -168,12 +172,12 @@ class YOLOModelManager(AbstractModelManager):
             models.append(self.model.module)  # type: ignore
 
         for model in models:
-            model.nc = len(dataset.names)  # type: ignore
+            model.nc = len(class_names)  # type: ignore
             model.hyp = self.cfg["hyper_params"]
             model.gr = 1.0  # type: ignore
-            model.class_weights = labels_to_class_weights(dataset.labels, len(dataset.names)).to(self.device)
+            model.class_weights = labels_to_class_weights(labels, len(class_names)).to(self.device)
 
-            model.names = dataset.names  # type: ignore
+            model.names = class_names  # type: ignore
             model.stride = head.stride  # type: ignore
             model.cfg = self.cfg  # type: ignore
             model.yaml = self.yaml  # type: ignore

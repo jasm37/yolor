@@ -164,7 +164,7 @@ if __name__ == "__main__":
     model_manager.freeze(train_cfg["train"]["freeze"])
     model, ema, device = train_builder.prepare()
     model_manager.model = model
-    model = model_manager.set_model_params(train_dataset, ema=ema)
+    model = model_manager.set_model_params(train_dataset.names, train_dataset.labels, ema=ema)
 
     # Set model trainer
     trainer = Trainer(
