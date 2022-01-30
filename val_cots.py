@@ -65,10 +65,10 @@ def get_parser() -> argparse.Namespace:
         help="Image height. (-1 will set image height to be identical to image width.)",
     )
     parser.add_argument(
-        "-ct", "--conf-t", type=float, default=0.001, help="Confidence threshold."
+        "-ct", "--conf-t", type=float, help="Confidence threshold."
     )
     parser.add_argument(
-        "-it", "--iou-t", type=float, default=0.65, help="IoU threshold."
+        "-it", "--iou-t", type=float, help="IoU threshold."
     )
     parser.add_argument(
         "--top-k",
@@ -157,6 +157,10 @@ def get_parser() -> argparse.Namespace:
         dest="plot",
         help="Whether to plot batch results",
     )
+    parser.add_argument(
+        "--debug-imp",
+        action='store_true',
+        help="Only used to debug code implementation")
     return parser.parse_args()
 
 
@@ -204,13 +208,18 @@ if __name__ == "__main__":
 
     # Set validation config
     val_cfg = {
-        "train": {
-            "single_cls": args.single_cls,
-            "plot": args.plot,
-            "batch_size": args.batch_size,
-            "image_size": train_cfg['train']['image_size'],
-        },
-        "hyper_params": {"conf_t": train_cfg['hyper_params']['conf_t'], "iou_t": train_cfg['hyper_params']['iou_t']},
+        "train":
+            {
+                "single_cls": args.single_cls,
+                "plot": args.plot,
+                "batch_size": args.batch_size,
+                "image_size": train_cfg['train']['image_size'],
+            },
+        "hyper_params":
+            {
+                "conf_t": args.conf_t or train_cfg['hyper_params']['conf_t'],
+                "iou_t": args.iou_t or train_cfg['hyper_params']['iou_t']
+            },
     }
 
     # Set data split
@@ -219,6 +228,9 @@ if __name__ == "__main__":
         train_perc=data_cfg['train_perc'],
         num_groups=data_cfg['num_splits'],
         csv_file=data_cfg['data_csv'])
+
+    if args.debug_imp:
+        data_splitter.reduce_df_sizes(50)
 
     val_dataset = LoadCOTSImagesAndLabels(
         video_path=data_cfg['video_path'],
@@ -264,8 +276,8 @@ if __name__ == "__main__":
         compute_loss=True,
         hybrid_label=args.hybrid_label,
         half=args.half,
-        log_dir=args.dst,
-        incremental_log_dir=True,
+        log_dir=log_dir,
+        incremental_log_dir=False,
         export=True,
         nms_type=args.nms_type,
         tta=args.tta,
