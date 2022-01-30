@@ -51,7 +51,7 @@ class TrainModelBuilder:
         else:
             self.log_dir = Path(log_dir)
         self.wdir = Path(os.path.join(self.log_dir, "weights"))
-        if RANK in [-1, 0] and str(self.log_dir):
+        if RANK in [-1, 0] and str(log_dir):
             os.makedirs(self.wdir, exist_ok=True)
 
             if full_cfg is not None:
