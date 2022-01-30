@@ -261,6 +261,7 @@ class ImgAugmentator:
 
             else:  # warp boxes
                 xy = np.ones((n * 4, 3))
+                orig_areas = np.sqrt((targets[:, 3] - targets[:, 1]) * (targets[:, 4] - targets[:, 2]))
                 xy[:, :2] = targets[:, [1, 2, 3, 4, 1, 4, 3, 2]].reshape(
                     n * 4, 2
                 )  # x1y1, x2y2, x1y2, x2y1
@@ -288,7 +289,16 @@ class ImgAugmentator:
             )
             targets = targets[i]
             targets[:, 1:5] = new[i]
-
+            # Rescale label sizes after the transformations:
+            #   > Original and transformed boxes should have the same area
+            if len(targets):
+                orig_areas = orig_areas[i]
+                w, h = targets[:, 3] - targets[:, 1], targets[:, 4] - targets[:, 2]
+                new_areas = np.sqrt(w * h)
+                prop = np.clip(orig_areas / new_areas, a_min=0, a_max=1)
+                centers = (targets[:, (1, 2)] + targets[:, (3, 4)]) / 2
+                scaled_wh = np.c_[w * prop, h * prop]
+                targets[:, 1:5] = np.hstack([centers - scaled_wh / 2, centers + scaled_wh / 2])
         return im, targets
 
     @staticmethod
