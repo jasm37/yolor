@@ -190,7 +190,7 @@ if __name__ == "__main__":
     base_log_dir = train_cfg["train"]["log_dir"] or "exp"
     log_dir = str(
         increment_path(
-            path_=str(Path(base_log_dir) / VAL_SUBDIR / datetime.now().strftime("%Y_%m%d_runs")),
+            path_=str(Path(base_log_dir) / VAL_SUBDIR / datetime.now().strftime("%Y_%m%d_%H_runs")),
             mkdir=True))
 
     # Set configurations
