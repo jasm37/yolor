@@ -1,4 +1,4 @@
-from typing import Tuple, Optional, Union
+from typing import Tuple, Optional, Union, List
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -93,7 +93,10 @@ class CsvParser:
         for row in self._df.iterrows():
             yield self._get_row_data(row, normalize=normalize, return_shape=return_shape)  # noqa
 
-    def read_all(self, normalize: bool = True, return_shape: bool = True):
+    def read_all(
+            self,
+            normalize: bool = True, return_shape: bool = True
+    ) -> Union[Tuple[List[str], List[np.ndarray], List[Tuple[int, int]]], Tuple[List[str], List[np.ndarray]]]:
         """
         Read all image paths, labels and, if given, image shapes
         :param normalize: whether to normalize the bounding boxes according to the image width and height
@@ -109,6 +112,6 @@ class CsvParser:
             if return_shape:
                 shapes.append(outs[2])
         if return_shape:
-            return img_paths, bboxes, shapes
+            return img_paths, bboxes, shapes  # noqa
         else:
             return img_paths, bboxes
