@@ -286,6 +286,7 @@ if __name__ == "__main__":
     )
     t0 = time.monotonic()
     val_result = validator.validation()
+    validator.plot_and_save_metrics()
     time_took = time.monotonic() - t0
 
     LOGGER.info(f"Time took: {time_took:.5f}s")

@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from data_loading.label_adapters import scale_coords, xywh2xyxy
-from utils.plots import plot_images
+from utils.plots import plot_images, plot_pr_curve, plot_mc_curves
 from loss.losses import ComputeLoss
 from validation.abstract_validator import AbstractValidator
 from logger import logger
@@ -26,7 +26,7 @@ class YoloValidator(AbstractValidator):
 
     def __init__(
             self,
-            model: nn.Module,  # type: ignore # noqa: F821
+            model: nn.Module,
             dataloader: DataLoader,
             device: torch.device,
             cfg: Dict[str, Any],
@@ -37,6 +37,7 @@ class YoloValidator(AbstractValidator):
             export: bool = False,
             hybrid_label: bool = False,
             nms_type: str = "nms",
+            iou2show: Optional[float] = None,
             tta: bool = False,
             tta_scales: List = None,
             tta_flips: List = None,
@@ -72,6 +73,7 @@ class YoloValidator(AbstractValidator):
         :param hybrid_label: Run NMS with hybrid information (ground truth label + predicted result.)
                             (PyTorch only) This is for auto-labeling purpose
         :param nms_type: NMS type (e.g. nms, batched_nms, fast_nms, matrix_nms)
+        :param iou2show: IOU value for which metrics will be shown
         :param tta: Apply TTA or not
         :param tta_scales: scale ratios of each augmentation for TTA
         :param tta_flips: flip types of each augmentation for TTA
@@ -97,8 +99,12 @@ class YoloValidator(AbstractValidator):
         self.confusion_matrix: Optional[ConfusionMatrix] = None
         self.statistics: Dict[str, Any] = {}
         self.nc = 1 if self.cfg_train["single_cls"] else int(self.n_class)  # type: ignore
-        self.iouv = torch.linspace(0.5, 0.95, 10).to(self.device, non_blocking=True)  # IoU vector
-        self.niou = self.iouv.numel()
+        # self.iou_vals = torch.linspace(0.5, 0.95, 10).to(self.device, non_blocking=True)  # old IoU vector
+        self.ious = torch.linspace(0.25, 0.80, 12).to(self.device, non_blocking=True)  # IoU vector
+        self.ious_np = self.ious.to('cpu').numpy()
+        self.iou2show = iou2show or 0.5
+        self.niou = self.ious.numel()
+        self.complete_metrics = {}
         if compute_loss and not self.tta:
             self.loss_fn = ComputeLoss(self.model)
         else:
@@ -186,13 +192,13 @@ class YoloValidator(AbstractValidator):
         """
         correct = torch.zeros(
             detections.shape[0],
-            self.iouv.shape[0],
+            self.ious.shape[0],
             dtype=torch.bool,
-            device=self.iouv.device,
+            device=self.ious.device,
         )
         iou = box_iou(labels[:, 1:], detections[:, :4])
         x = torch.where(
-            (iou >= self.iouv[0]) & (labels[:, 0:1] == detections[:, 5])
+            (iou >= self.ious[0]) & (labels[:, 0:1] == detections[:, 5])
         )  # IoU above threshold and classes match
         if x[0].shape[0]:
             matches = (
@@ -203,8 +209,8 @@ class YoloValidator(AbstractValidator):
                 matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
                 # matches = matches[matches[:, 2].argsort()[::-1]]
                 matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
-            matches = torch.Tensor(matches).to(self.iouv.device, non_blocking=True)
-            correct[matches[:, 1].long()] = matches[:, 2:3] >= self.iouv
+            matches = torch.Tensor(matches).to(self.ious.device, non_blocking=True)
+            correct[matches[:, 1].long()] = matches[:, 2:3] >= self.ious
         return correct
 
     def statistics_per_image(
@@ -227,13 +233,13 @@ class YoloValidator(AbstractValidator):
                 break
 
             labels = targets[targets[:, 0] == si, 1:]
-            nl = len(labels)
-            tcls = labels[:, 0].tolist() if nl else []  # target class
+            num_labels = len(labels)
+            tcls = labels[:, 0].tolist() if num_labels else []  # target class
             path, shape = Path(paths[si]), shapes[si][0]  # noqa
             self.seen += 1
 
             if len(pred) == 0:
-                if nl:
+                if num_labels:
                     self.statistics["stats"].append(
                         (
                             torch.zeros(0, self.niou, dtype=torch.bool),
@@ -253,7 +259,7 @@ class YoloValidator(AbstractValidator):
             )  # native-space pred
 
             # Evaluate
-            if nl:
+            if num_labels:
                 tbox = xywh2xyxy(labels[:, 1:5])  # target boxes
                 scale_coords(
                     img[si].shape[1:], tbox, shape, shapes[si][1]
@@ -266,7 +272,7 @@ class YoloValidator(AbstractValidator):
                 correct = torch.zeros(pred.shape[0], self.niou, dtype=torch.bool)
             self.statistics["stats"].append(
                 (correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls)
-            )  # (correct, conf, pcls, tcls)
+            )  # (correct, confidence, predicted cls, target cls)
 
     def validation_step(
             self,
@@ -339,16 +345,21 @@ class YoloValidator(AbstractValidator):
         if len(self._idxs2plot) > 0 or self.show_plots:
             formatted_out = \
                 [
-                    np.stack(
-                        [np.array(
-                            [float(i), c, (x1 + x2) / 2, (y1 + y2) / 2, (x2 - x1) / 2, (y2 - y1) / 2])
-                            for (x1, y1, x2, y2, _, c) in arr.cpu().numpy()])
+                    np.ceil(
+                        np.stack(
+                            [np.array(
+                                [float(i), c, (x1+x2)/2, (y1+y2)/2, x2 - x1, y2 - y1])
+                                for (x1, y1, x2, y2, _, c) in arr.cpu().numpy()]
+                        )
+                    )
                     if len(arr) > 0 else np.array([])
                     for i, arr in enumerate(out)
                 ]
             f_name = None
             if batch_idx in self._idxs2plot:
                 f_name = os.path.join(self.log_dir, f"img_batch{batch_idx}.jpg")
+            logger.info(f"\nTargets: \n{np.ceil(targets.cpu().numpy())}")
+            logger.info(f"Predict: \n{formatted_out}")
             out_img = plot_images(images=imgs, targets=targets, predictions=formatted_out,
                                   unnormalize=False, fname=f_name, resize_mosaic=False)
             if self.show_plots:
@@ -368,11 +379,14 @@ class YoloValidator(AbstractValidator):
                 self.statistics["f1"],
                 self.statistics["f2"],
                 self.statistics["ap_class"],
+                iou,
+                self.complete_metrics
             ) = ap_per_class(
                 *self.statistics["stats"],
                 plot=self.export,
-                save_dir=self.log_dir,
-                names=list(self.names.keys()),
+                iou2show=self.iou2show,
+                iou_values=self.ious_np
+
             )
             self.statistics["ap50"], self.statistics["ap"] = (
                 self.statistics["ap"][:, 0],
@@ -403,6 +417,8 @@ class YoloValidator(AbstractValidator):
         :param verbose: print validation result per class or not.
         :returns: a tuple with dt for statistics.
         """
+        first_iou = str(self.ious_np[0])[1:4]
+        last_iou = str(self.ious_np[-1])[1:4]
         # print result
         s = ("%20s" + "%11s" * 8) % (
             "Class",
@@ -413,7 +429,7 @@ class YoloValidator(AbstractValidator):
             "F1",
             "F2",
             "mAP@.5",
-            "mAP@.5:.95",
+            f"mAP@{first_iou}:{last_iou}",
         )
 
         pf = "%20s" + "%11i" * 2 + "%11.3g" * 6  # print format
@@ -501,3 +517,18 @@ class YoloValidator(AbstractValidator):
             maps,
             t,
         )
+
+    def plot_and_save_metrics(self):
+        if self.complete_metrics:
+            px, py = self.complete_metrics['px'], self.complete_metrics['py']
+            ap = self.complete_metrics['ap']
+            precision, recall = self.complete_metrics['prec'], self.complete_metrics['recall']
+            f1, f2 = self.complete_metrics['f1'], self.complete_metrics['f2']
+            names = list(self.names.keys())
+            plot_pr_curve(px, py, ap, Path(self.log_dir) / "PR_curve.png", names)
+            plot_mc_curves(px, f1, self.ious_np, Path(self.log_dir) / "F1_curve.png", names, ylabel="F1")
+            plot_mc_curves(px, f2, self.ious_np, Path(self.log_dir) / "F2_curve.png", names, ylabel="F2")
+            plot_mc_curves(px, precision, self.ious_np, Path(self.log_dir) / "P_curve.png", names, ylabel="Precision")
+            plot_mc_curves(px, recall, self.ious_np, Path(self.log_dir) / "R_curve.png", names, ylabel="Recall")
+        else:
+            logger.info('No metrics to plot. Skipping!')
