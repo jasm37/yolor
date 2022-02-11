@@ -9,7 +9,7 @@ import torch
 import torchvision
 
 from data_loading.label_adapters import xywh2xyxy
-from utils.plots import plot_pr_curve, plot_mc_curve
+from utils.plots import plot_pr_curve, plot_mc_curves
 from logger import logger
 
 DIV_EPS = 1e-16
@@ -130,10 +130,10 @@ def ap_per_class(
         pred_cls: np.ndarray,
         target_cls: np.ndarray,
         plot: bool = False,
-        save_dir: str = ".",
-        names: list = None,
-        metric2maximize: str = 'F2'
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        metric2maximize: str = 'F2',
+        iou2show: Optional[float] = None,
+        iou_values: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, dict]:
     """Compute the average precision, given the recall and precision curves.
     Source: https://github.com/rafaelpadilla/Object-Detection-Metrics.
     :param tp:  True positives (numpy array, nx1 or nx10).
@@ -141,12 +141,21 @@ def ap_per_class(
     :param pred_cls:  Predicted object classes (numpy array).
     :param target_cls:  True object classes (numpy array).
     :param plot:  Plot precision-recall curve at mAP@0.5
-    :param save_dir:  Plot save directory
-    :param names: class names to be added to the plot
     :param metric2maximize: metric to maximize to grab the resp. AP metrics
                             By default, F2 but F1 can also be selected
-    :returns: The average precision as computed in py-faster-rcnn.
+    :param iou2show: IOU value for which to return the metrics
+    :param iou_values: IOU values from which the inputs were computed
+    :returns: The average precision as computed in py-faster-rcnn
+              the selected iou value for which were selected and
+              the complete metrics if plot is True
     """
+    # Compute IOU index to return metrics
+    iou_idx = np.argmin(np.abs(iou_values - iou2show)).item()
+    logger.info(
+        f"Showing results for IOU: {iou_values[iou_idx].item()} "
+        f"(closest to {iou2show})"
+    )
+    logger.info(f"Number of predicted boxes: {len(pred_cls)}, number of target boxes: {len(target_cls)}")
     # Sort by objectness
     class_mask = np.argsort(-conf)
     tp, conf, pred_cls = tp[class_mask], conf[class_mask], pred_cls[class_mask]
@@ -158,6 +167,7 @@ def ap_per_class(
     # Create Precision-Recall curve and compute AP for each class
     px, py = np.linspace(0, 1, 1000), []  # for plotting
     ap, p, r = np.zeros((nc, tp.shape[1])), np.zeros((nc, 1000)), np.zeros((nc, 1000))
+    rec_dict, prec_dict, f1_dict, f2_dict = {}, {}, {}, {}
     for ci, c in enumerate(unique_classes):
         class_mask = (pred_cls == c)
         n_l = (target_cls == c).sum()  # number of labels
@@ -173,12 +183,19 @@ def ap_per_class(
             # Recall
             recall = tpc / (n_l + DIV_EPS)  # recall curve
             r[ci] = np.interp(
-                -px, -conf[class_mask], recall[:, 0], left=0
+                -px, -conf[class_mask], recall[:, iou_idx], left=0
             )  # negative x, xp because xp decreases
 
             # Precision
             precision = tpc / (tpc + fpc)  # precision curve
-            p[ci] = np.interp(-px, -conf[class_mask], precision[:, 0], left=1)  # p at pr_score
+            p[ci] = np.interp(-px, -conf[class_mask], precision[:, iou_idx], left=1)  # p at pr_score
+
+            if plot:
+                for _i, _iou in enumerate(iou_values):
+                    rec_dict[_iou] = _rec = np.interp(-px, -conf[class_mask], recall[:, _i])
+                    prec_dict[_iou] = _prec = np.interp(-px, -conf[class_mask], precision[:, _i])
+                    f1_dict[_iou] = 2 * _prec * _rec / (_prec + _rec + DIV_EPS)
+                    f2_dict[_iou] = 5 * _prec * _rec / (4 * _prec + _rec + DIV_EPS)
 
             # AP from recall-precision curve
             for j in range(tp.shape[1]):
@@ -189,13 +206,16 @@ def ap_per_class(
     # Compute F1 and F2 (harmonic mean of precision and recall)
     f1 = 2 * p * r / (p + r + DIV_EPS)
     f2 = 5 * p * r / (4 * p + r + DIV_EPS)
-    if plot:
-        plot_pr_curve(px, py, ap, Path(save_dir) / "PR_curve.png", names)
-        plot_mc_curve(px, f1, Path(save_dir) / "F1_curve.png", names, ylabel="F1")
-        plot_mc_curve(px, f2, Path(save_dir) / "F2_curve.png", names, ylabel="F2")
-        plot_mc_curve(px, p, Path(save_dir) / "P_curve.png", names, ylabel="Precision")
-        plot_mc_curve(px, r, Path(save_dir) / "R_curve.png", names, ylabel="Recall")
-
+    all_metrics_dict = \
+        {
+            "px": px,
+            "py": py,
+            "ap": ap,
+            "recall": rec_dict,
+            "precision": prec_dict,
+            "f1": f1_dict,
+            "f2": f2_dict,
+        } if plot else {}
     if metric2maximize == "F1":
         class_mask = f1.mean(0).argmax()  # max F1 index
     elif metric2maximize == "F2":
@@ -204,7 +224,8 @@ def ap_per_class(
         error_msg = "Unknown option for parameter 'metric2maximize'. Select 'F1' or 'F2'"
         logger.error(error_msg)
         raise Exception(error_msg)
-    return p[:, class_mask], r[:, class_mask], ap, f1[:, class_mask], f2[:, class_mask], unique_classes.astype("int32")
+    return p[:, class_mask], r[:, class_mask], ap, f1[:, class_mask], f2[:, class_mask], \
+           unique_classes.astype("int32"), iou_values[iou_idx], all_metrics_dict
 
 
 def compute_ap(recall: np.ndarray, precision: np.ndarray):
@@ -397,10 +418,10 @@ class ConfusionMatrix:
     """
 
     def __init__(self, nc: int, conf: float = 0.25, iou_thres: float = 0.45) -> None:
-        """Initialize ConfusionMatrix class.
-        :param nc: number of classes.
-        :param conf: confidence threshold.
-        :param iou_thres: IoU threshold.
+        """Initialize ConfusionMatrix class
+        :param nc: number of classes
+        :param conf: confidence threshold
+        :param iou_thres: IoU threshold
         """
         self.matrix = np.zeros((nc + 1, nc + 1))
         self.nc = nc  # number of classes
