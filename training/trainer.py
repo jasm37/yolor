@@ -390,6 +390,7 @@ class Trainer(AbstractTrainer):
 
             if metrics_dict["mF2"] > self.best_score:
                 self.best_score = metrics_dict["mF2"]
+                self.validator.plot_and_save_metrics()
 
             self._save_weights(self.current_epoch, "last.pt")
 
