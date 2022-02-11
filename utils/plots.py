@@ -9,6 +9,9 @@ import numpy as np
 import torch
 from typing import Dict, List, Optional, Tuple, Union, Sequence
 
+from matplotlib.axes import Axes
+from matplotlib.gridspec import GridSpec
+
 from data_loading.label_adapters import xywh2xyxy
 from utils.constants import PLOT_COLOR
 
@@ -174,7 +177,7 @@ def plot_images(
         paths: Optional[Sequence[str]] = None,
         fname: str = "images.jpg",
         names: Optional[Union[tuple, list]] = None,
-        max_size: int = 1280,
+        max_size: int = 4800,
         max_subplots: int = 16,
         resize_mosaic: bool = True
 ) -> np.ndarray:
@@ -341,6 +344,7 @@ def plot_pr_curve(
         ap: np.ndarray,
         save_dir: Union[str, Path] = "pr_curve.png",
         names: list = None,  # noqa: B006
+
 ) -> None:
     """Plot precision-recall curve.
     :param px: x axis for plotting.
@@ -377,42 +381,65 @@ def plot_pr_curve(
     plt.close()
 
 
-def plot_mc_curve(
+def plot_mc_curves(
         px: np.ndarray,
-        py: np.ndarray,
+        py: Dict[float, np.ndarray],
+        iou_values: np.ndarray,
         save_dir: Union[str, Path] = "mc_curve.png",
         names: list = None,  # noqa: B006
         xlabel: str = "Confidence",
         ylabel: str = "Metric",
-) -> None:
-    """Plot metric-confidence curve.
-    :param px: x axis for plotting.
-    :param py: y axis for plotting.
-    :param save_dir: save directory for plotted image.
-    :param names: class names.
-    :param xlabel: x axis label.
-    :param ylabel: y axis label.
+):
+    """Plot metric-confidence curve
+    :param px: x axis for plotting
+    :param py: y axis for plotting
+    :param iou_values: IoU values for which each subplot belong to
+    :param save_dir: save directory for plotted image
+    :param names: class names
+    :param xlabel: x axis label
+    :param ylabel: y axis label
     """
-    fig, ax = plt.subplots(1, 1, figsize=(9, 6), tight_layout=True)
+    num_cases = len(py)
+    grid_side = math.ceil(math.sqrt(num_cases))
+    length, rest = divmod(num_cases, grid_side)
+    fig = plt.figure(constrained_layout=True, figsize=(4 * grid_side, 4 * grid_side))
+    spec = GridSpec(length + 1, grid_side, fig)
+    for n, iou in enumerate(iou_values):
+        i, j = divmod(n, grid_side)
+        ax = fig.add_subplot(spec[i, j])
+        plot_mc_curve(px, py[iou], ax, names, xlabel=xlabel, ylabel=ylabel, iou=iou_values[n])
+    fig.savefig(Path(save_dir), dpi=750)
+    plt.close()
+
+
+def plot_mc_curve(
+        px: np.ndarray,
+        py: np.ndarray,
+        ax: Axes,
+        names: list = None,  # noqa: B006
+        xlabel: str = "Confidence",
+        ylabel: str = "Metric",
+        iou: Optional[float] = None
+) -> None:
+    """Plot metric-confidence curve
+    :param px: x axis for plotting
+    :param py: y axis for plotting
+    :param ax: axis where to plot
+    :param names: class names
+    :param xlabel: x axis label
+    :param ylabel: y axis label
+    :param iou: IOU for which the shown plots/metrics belong to
+    """
     names = names or []
-    if 0 < len(names) < 21:  # display per-class legend if < 21 classes
+    if 1 < len(names) < 21:  # display per-class legend if < 21 classes
         for i, y in enumerate(py):
             ax.plot(px, y, linewidth=1, label=f"{names[i]}")  # plot(confidence, metric)
     else:
-        ax.plot(px, py.T, linewidth=1, color="grey")  # plot(confidence, metric)
+        ax.plot(px, py.T, linewidth=1, color="blue")  # plot(confidence, metric)
 
-    y = py.mean(0)
-    ax.plot(
-        px,
-        y,
-        linewidth=3,
-        color="blue",
-        label=f"all classes {y.max():.2f} at {px[y.argmax()]:.3f}",
-    )
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
-    plt.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
-    fig.savefig(Path(save_dir), dpi=250)
-    plt.close()
+    ax.set_title(f"IOU: {iou:.2f}, best score {py.max():.2f}@{px[py.argmax()]:.3f}")
+    ax.grid()
